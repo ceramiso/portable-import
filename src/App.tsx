@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { initializeApp, getApps } from 'firebase/app';
+import { initializeApp } from 'firebase/app';
 import {
   getAuth,
   signInWithEmailAndPassword,
@@ -8,9 +8,7 @@ import {
   setPersistence,
   browserLocalPersistence,
   browserSessionPersistence,
-  createUserWithEmailAndPassword,
-  sendPasswordResetEmail,
-type User as FirebaseUser,
+  type User as FirebaseUser,
 } from 'firebase/auth';
 import {
   getFirestore,
@@ -53,9 +51,9 @@ import {
   Layers,
   Building2,
   UserPlus,
-  KeyRound,
   Download,
   Upload,
+  KeyRound,
 } from 'lucide-react';
 
 // --- Firebase Configuration ---
@@ -72,15 +70,11 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// Secondary Firebase app instance so Admin can create new employee accounts without logging themselves out
-const secondaryApp =
-  getApps().find((a) => a.name === 'SecondaryApp') ||
-  initializeApp(firebaseConfig, 'SecondaryApp');
-const secondaryAuth = getAuth(secondaryApp);
-
+const COMPANY_GATE_EMAIL = 'office@ceramiso.co.il';
 const ADMIN_EMAIL = 'izak@ceramiso.co.il';
+
 const ORDERS_PATH = ['artifacts', 'ceramic-orders', 'public', 'data', 'orders'] as const;
-const USERS_PATH = ['artifacts', 'ceramic-orders', 'public', 'data', 'users'] as const;
+const STAFF_PATH = ['artifacts', 'ceramic-orders', 'public', 'data', 'authorized_staff'] as const;
 const SETTINGS_DOC_PATH = ['artifacts', 'ceramic-orders', 'public', 'data', 'settings', 'general'] as const;
 
 interface LogEntry {
@@ -95,11 +89,10 @@ interface ChatMessage {
   timestamp: number;
 }
 
-interface AppUserRecord {
+interface StaffRecord {
   id: string;
-  name: string;
-  email: string;
-  role: 'admin' | 'user';
+  username: string;
+  password: string;
   active: boolean;
   createdAt: number;
 }
@@ -188,18 +181,31 @@ const compressImage = (file: File): Promise<string> => {
 };
 
 export default function App() {
-  // Auth State
-  const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
+  // Step 1 Auth: Firebase Gate (office@ceramiso.co.il or izak@ceramiso.co.il)
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [loginEmail, setLoginEmail] = useState('');
-  const [loginPassword, setLoginPassword] = useState('');
-  const [rememberMe, setRememberMe] = useState(true);
-  const [loginError, setLoginError] = useState('');
-  const [loggingIn, setLoggingIn] = useState(false);
+  const [gateEmailInput, setGateEmailInput] = useState('');
+  const [gatePasswordInput, setGatePasswordInput] = useState('');
+  const [rememberGate, setRememberGate] = useState(true);
+  const [gateError, setGateError] = useState('');
+  const [gateSubmitting, setGateSubmitting] = useState(false);
+
+  // Step 2 Auth: Staff Username & Password (unlocked only after Gate Auth)
+  const [staffSessionUser, setStaffSessionUser] = useState<string>(() => {
+    return (
+      localStorage.getItem('ceramiso_staff_user') ||
+      sessionStorage.getItem('ceramiso_staff_user') ||
+      ''
+    );
+  });
+  const [staffUsernameInput, setStaffUsernameInput] = useState('');
+  const [staffPasswordInput, setStaffPasswordInput] = useState('');
+  const [rememberStaff, setRememberStaff] = useState(true);
+  const [staffLoginError, setStaffLoginError] = useState('');
 
   // Data State
   const [orders, setOrders] = useState<Order[]>([]);
-  const [appUsers, setAppUsers] = useState<AppUserRecord[]>([]);
+  const [staffList, setStaffList] = useState<StaffRecord[]>([]);
   const [notificationEmail, setNotificationEmail] = useState<string>(ADMIN_EMAIL);
 
   // Filters
@@ -212,14 +218,14 @@ export default function App() {
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // Admin Panel Modal (Users & Notification Email)
+  // Admin Panel Modal (Authorized Staff & Notification Email)
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
-  const [newUserName, setNewUserName] = useState('');
-  const [newUserEmail, setNewUserEmail] = useState('');
-  const [newUserPassword, setNewUserPassword] = useState('');
-  const [creatingUser, setCreatingUser] = useState(false);
-  const [editingUserId, setEditingUserId] = useState<string | null>(null);
-  const [editUserNameValue, setEditUserNameValue] = useState('');
+  const [newStaffUsername, setNewStaffUsername] = useState('');
+  const [newStaffPassword, setNewStaffPassword] = useState('');
+  const [creatingStaff, setCreatingStaff] = useState(false);
+  const [editingStaffId, setEditingStaffId] = useState<string | null>(null);
+  const [editStaffUsername, setEditStaffUsername] = useState('');
+  const [editStaffPassword, setEditStaffPassword] = useState('');
   const [adminEmailInput, setAdminEmailInput] = useState(ADMIN_EMAIL);
   const [savingSettings, setSavingSettings] = useState(false);
 
@@ -245,29 +251,28 @@ export default function App() {
     images: [] as string[],
   });
 
-  const isAdmin = (authUser?.email || '').toLowerCase() === ADMIN_EMAIL.toLowerCase();
+  const currentAuthEmail = (firebaseUser?.email || '').toLowerCase();
+  const isAdmin = currentAuthEmail === ADMIN_EMAIL.toLowerCase();
+  const isCompanyGateUnlocked =
+    currentAuthEmail === COMPANY_GATE_EMAIL.toLowerCase() || isAdmin;
 
-  // Resolve current user's display name from Firestore users list or email prefix
-  const currentUserRecord = appUsers.find(
-    (u) => u.email.toLowerCase() === (authUser?.email || '').toLowerCase()
-  );
-  const currentDisplayName = isAdmin
-    ? currentUserRecord?.name || 'איציק (מנהל)'
-    : currentUserRecord?.name || authUser?.email?.split('@')[0] || 'משתמש';
+  // Admin gets instant access upon logging in with izak@ceramiso.co.il
+  const isFullyLoggedIn = isAdmin || (isCompanyGateUnlocked && Boolean(staffSessionUser));
+  const currentDisplayName = isAdmin ? 'איציק (מנהל)' : staffSessionUser;
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
-      setAuthUser(user);
+      setFirebaseUser(user);
       setAuthLoading(false);
     });
     return () => unsub();
   }, []);
 
-  // Load Orders, Users & Settings once authenticated
+  // Load Firestore data only after passing Company/Admin Gate
   useEffect(() => {
-    if (!authUser) {
+    if (!firebaseUser || !isCompanyGateUnlocked) {
       setOrders([]);
-      setAppUsers([]);
+      setStaffList([]);
       return;
     }
 
@@ -297,20 +302,19 @@ export default function App() {
       setOrders(list);
     });
 
-    const usersRef = collection(db, ...USERS_PATH);
-    const unsubUsers = onSnapshot(usersRef, (snapshot) => {
-      const list: AppUserRecord[] = snapshot.docs.map((d) => {
+    const staffRef = collection(db, ...STAFF_PATH);
+    const unsubStaff = onSnapshot(staffRef, (snapshot) => {
+      const list: StaffRecord[] = snapshot.docs.map((d) => {
         const data = d.data();
         return {
           id: d.id,
-          name: data.name || '',
-          email: data.email || '',
-          role: data.role === 'admin' ? 'admin' : 'user',
+          username: data.username || '',
+          password: data.password || '',
           active: data.active !== false,
           createdAt: data.createdAt || Date.now(),
         };
       });
-      setAppUsers(list);
+      setStaffList(list);
     });
 
     const settingsRef = doc(db, ...SETTINGS_DOC_PATH);
@@ -324,138 +328,168 @@ export default function App() {
 
     return () => {
       unsubOrders();
-      unsubUsers();
+      unsubStaff();
       unsubSettings();
     };
-  }, [authUser]);
+  }, [firebaseUser, isCompanyGateUnlocked]);
 
-  const handleLogin = async (e: React.FormEvent) => {
+  // Verify that the logged-in staff member still exists and is active
+  useEffect(() => {
+    if (!isAdmin && isCompanyGateUnlocked && staffSessionUser && staffList.length > 0) {
+      const found = staffList.find(
+        (s) => s.username.toLowerCase() === staffSessionUser.toLowerCase()
+      );
+      if (!found || !found.active) {
+        localStorage.removeItem('ceramiso_staff_user');
+        sessionStorage.removeItem('ceramiso_staff_user');
+        setStaffSessionUser('');
+      }
+    }
+  }, [isAdmin, isCompanyGateUnlocked, staffSessionUser, staffList]);
+
+  // Step 1 Submit: Company Email (office@ceramiso.co.il) or Admin Email (izak@ceramiso.co.il)
+  const handleGateLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoginError('');
-    setLoggingIn(true);
+    setGateError('');
 
+    const emailClean = gateEmailInput.trim().toLowerCase();
+    if (
+      emailClean !== COMPANY_GATE_EMAIL.toLowerCase() &&
+      emailClean !== ADMIN_EMAIL.toLowerCase()
+    ) {
+      setGateError(
+        `גישה מותרת אך ורק דרך אימייל החברה (${COMPANY_GATE_EMAIL}) או אימייל המנהל.`
+      );
+      return;
+    }
+
+    setGateSubmitting(true);
     try {
       await setPersistence(
         auth,
-        rememberMe ? browserLocalPersistence : browserSessionPersistence
+        rememberGate ? browserLocalPersistence : browserSessionPersistence
       );
-      await signInWithEmailAndPassword(auth, loginEmail.trim(), loginPassword);
-    } catch (err: any) {
-      console.error('Login error:', err);
-      setLoginError('אימייל או סיסמה שגויים, או שאין הרשאת גישה למערכת.');
+      await signInWithEmailAndPassword(auth, emailClean, gatePasswordInput);
+    } catch (err) {
+      console.error('Gate login error:', err);
+      setGateError('אימייל או סיסמת חברה שגויים.');
     } finally {
-      setLoggingIn(false);
+      setGateSubmitting(false);
     }
   };
 
-  const handleLogout = async () => {
-    await signOut(auth);
-    setLoginPassword('');
-  };
-
-  // Block disabled users (except admin)
-  useEffect(() => {
-    if (authUser && !isAdmin && currentUserRecord && currentUserRecord.active === false) {
-      alert('המשתמש שלך הושבת על ידי מנהל המערכת.');
-      signOut(auth);
-    }
-  }, [authUser, isAdmin, currentUserRecord]);
-
-  // --- Admin User Management Handlers ---
-  const handleCreateUser = async (e: React.FormEvent) => {
+  // Step 2 Submit: Staff Username & Password
+  const handleStaffLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isAdmin) return;
-    if (!newUserName.trim() || !newUserEmail.trim() || newUserPassword.length < 6) {
-      alert('נא למלא שם מלא, אימייל תקין וסיסמה של לפחות 6 תווים.');
+    setStaffLoginError('');
+
+    const uInput = staffUsernameInput.trim();
+    const pInput = staffPasswordInput;
+
+    const matched = staffList.find(
+      (s) => s.username.toLowerCase() === uInput.toLowerCase() && s.password === pInput
+    );
+
+    if (!matched) {
+      setStaffLoginError('שם משתמש או סיסמה שגויים. פנה למנהל המערכת להוספתך לרשימת המורשים.');
       return;
     }
 
-    setCreatingUser(true);
-    try {
-      const emailClean = newUserEmail.trim().toLowerCase();
-      const cred = await createUserWithEmailAndPassword(
-        secondaryAuth,
-        emailClean,
-        newUserPassword
-      );
-      await signOut(secondaryAuth);
+    if (!matched.active) {
+      setStaffLoginError('משתמש זה הושבת על ידי מנהל המערכת.');
+      return;
+    }
 
-      await setDoc(doc(db, ...USERS_PATH, cred.user.uid), {
-        name: newUserName.trim(),
-        email: emailClean,
-        role: emailClean === ADMIN_EMAIL.toLowerCase() ? 'admin' : 'user',
+    if (rememberStaff) {
+      localStorage.setItem('ceramiso_staff_user', matched.username);
+      sessionStorage.removeItem('ceramiso_staff_user');
+    } else {
+      sessionStorage.setItem('ceramiso_staff_user', matched.username);
+      localStorage.removeItem('ceramiso_staff_user');
+    }
+    setStaffSessionUser(matched.username);
+    setStaffPasswordInput('');
+  };
+
+  const handleSwitchStaffUser = () => {
+    localStorage.removeItem('ceramiso_staff_user');
+    sessionStorage.removeItem('ceramiso_staff_user');
+    setStaffSessionUser('');
+    setStaffPasswordInput('');
+  };
+
+  const handleFullLogout = async () => {
+    handleSwitchStaffUser();
+    await signOut(auth);
+    setGatePasswordInput('');
+  };
+
+  // --- Admin Authorized Staff Management (Admin Only) ---
+  const handleAddStaff = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isAdmin) return;
+    if (!newStaffUsername.trim() || !newStaffPassword.trim()) {
+      alert('נא למלא שם משתמש וסיסמה');
+      return;
+    }
+
+    const exists = staffList.some(
+      (s) => s.username.toLowerCase() === newStaffUsername.trim().toLowerCase()
+    );
+    if (exists) {
+      alert('שם משתמש זה כבר קיים ברשימת המורשים.');
+      return;
+    }
+
+    setCreatingStaff(true);
+    try {
+      await addDoc(collection(db, ...STAFF_PATH), {
+        username: newStaffUsername.trim(),
+        password: newStaffPassword.trim(),
         active: true,
         createdAt: Date.now(),
       });
-
-      setNewUserName('');
-      setNewUserEmail('');
-      setNewUserPassword('');
-      alert('המשתמש נוצר בהצלחה ויכול להתחבר כעת!');
-    } catch (err: any) {
-      console.error('Create user error:', err);
-      if (err?.code === 'auth/email-already-in-use') {
-        alert('כתובת האימייל הזו כבר רשומה במערכת.');
-      } else {
-        alert('שגיאה ביצירת המשתמש. ודא שכתובת האימייל תקינה והסיסמה בת 6 תווים לפחות.');
-      }
-    } finally {
-      setCreatingUser(false);
-    }
-  };
-
-  const handleUpdateUserName = async (userId: string) => {
-    if (!isAdmin || !editUserNameValue.trim()) return;
-    try {
-      await updateDoc(doc(db, ...USERS_PATH, userId), {
-        name: editUserNameValue.trim(),
-      });
-      setEditingUserId(null);
+      setNewStaffUsername('');
+      setNewStaffPassword('');
     } catch {
-      alert('שגיאה בעדכון שם המשתמש');
+      alert('שגיאה בהוספת המשתמש לרשימת המורשים');
+    } finally {
+      setCreatingStaff(false);
     }
   };
 
-  const handleToggleUserActive = async (userRec: AppUserRecord) => {
-    if (!isAdmin) return;
-    if (userRec.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
-      alert('לא ניתן להשבית את מנהל המערכת הראשי.');
-      return;
-    }
+  const handleSaveStaffEdit = async (id: string) => {
+    if (!isAdmin || !editStaffUsername.trim() || !editStaffPassword.trim()) return;
     try {
-      await updateDoc(doc(db, ...USERS_PATH, userRec.id), {
-        active: !userRec.active,
+      await updateDoc(doc(db, ...STAFF_PATH, id), {
+        username: editStaffUsername.trim(),
+        password: editStaffPassword.trim(),
+      });
+      setEditingStaffId(null);
+    } catch {
+      alert('שגיאה בעדכון פרטי המשתמש');
+    }
+  };
+
+  const handleToggleStaffActive = async (staff: StaffRecord) => {
+    if (!isAdmin) return;
+    try {
+      await updateDoc(doc(db, ...STAFF_PATH, staff.id), {
+        active: !staff.active,
       });
     } catch {
       alert('שגיאה בשינוי סטטוס המשתמש');
     }
   };
 
-  const handleDeleteUserRecord = async (userRec: AppUserRecord) => {
+  const handleDeleteStaff = async (staff: StaffRecord) => {
     if (!isAdmin) return;
-    if (userRec.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
-      alert('לא ניתן למחוק את מנהל המערכת הראשי.');
-      return;
-    }
-    const ok = window.confirm(`האם להסיר את המשתמש "${userRec.name}" (${userRec.email}) מהמערכת?`);
+    const ok = window.confirm(`האם למחוק לצמיתות את "${staff.username}" מרשימת המורשים?`);
     if (!ok) return;
-
     try {
-      await updateDoc(doc(db, ...USERS_PATH, userRec.id), {
-        active: false,
-      });
-      await deleteDoc(doc(db, ...USERS_PATH, userRec.id));
+      await deleteDoc(doc(db, ...STAFF_PATH, staff.id));
     } catch {
       alert('שגיאה במחיקת המשתמש');
-    }
-  };
-
-  const handleResetUserPassword = async (email: string) => {
-    try {
-      await sendPasswordResetEmail(auth, email);
-      alert(`נשלח קישור לאיפוס סיסמה לכתובת: ${email}`);
-    } catch {
-      alert('שגיאה בשליחת מייל איפוס סיסמה');
     }
   };
 
@@ -608,7 +642,6 @@ export default function App() {
       }
     }
 
-    // Prevent non-admin from setting status directly to 'נמסר ללקוח'
     if (!isAdmin && formData.status === 'נמסר ללקוח') {
       alert('רק מנהל המערכת יכול לסמן הזמנה כ"נמסר ללקוח".');
       return;
@@ -661,7 +694,7 @@ export default function App() {
       setIsModalOpen(false);
     } catch (err) {
       console.error('Save error:', err);
-      alert('שגיאה בשמירה לענן. ודא שהגדרת את כללי האבטחה ב-Firebase.');
+      alert('שגיאה בשמירה לענן.');
     } finally {
       setSaving(false);
     }
@@ -775,14 +808,14 @@ export default function App() {
           <div className="w-12 h-12 rounded-2xl bg-amber-500 text-stone-950 font-bold text-2xl flex items-center justify-center mx-auto mb-3 animate-pulse">
             ק
           </div>
-          <p className="text-sm text-stone-300">טוען מערכת מאובטחת...</p>
+          <p className="text-sm text-stone-300">בודק הרשאות גישה...</p>
         </div>
       </div>
     );
   }
 
-  // --- Secure Login Screen ---
-  if (!authUser) {
+  // --- GATE 1: Company Email Verification (office@ceramiso.co.il or Admin izak@ceramiso.co.il) ---
+  if (!firebaseUser || !isCompanyGateUnlocked) {
     return (
       <div dir="rtl" className="min-h-screen bg-stone-900 flex items-center justify-center p-4">
         <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl">
@@ -790,20 +823,22 @@ export default function App() {
             <div className="w-16 h-16 rounded-2xl bg-amber-500 flex items-center justify-center text-stone-950 font-bold text-3xl mx-auto shadow-md mb-4">
               ק
             </div>
-            <h1 className="text-2xl font-bold text-stone-900">קרמיסו - ניהול הזמנות יבוא</h1>
-            <p className="text-stone-500 text-sm mt-1">גישה מאובטחת לעובדי החברה בלבד</p>
+            <h1 className="text-2xl font-bold text-stone-900">קרמיסו - שער אבטחת חברה</h1>
+            <p className="text-stone-500 text-sm mt-1">
+              הזן את אימייל החברה (<span dir="ltr">office@ceramiso.co.il</span>) כדי לפתוח את מסך הכניסה לעובדים
+            </p>
           </div>
 
-          {loginError && (
+          {gateError && (
             <div className="bg-red-50 border border-red-200 text-red-700 text-xs p-3 rounded-xl mb-4 text-center">
-              {loginError}
+              {gateError}
             </div>
           )}
 
-          <form onSubmit={handleLogin} className="space-y-4">
+          <form onSubmit={handleGateLogin} className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-stone-600 mb-1.5">
-                כתובת אימייל
+                אימייל חברה / מנהל
               </label>
               <div className="relative">
                 <Mail className="w-5 h-5 text-stone-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
@@ -811,10 +846,92 @@ export default function App() {
                   type="email"
                   required
                   dir="ltr"
-                  value={loginEmail}
-                  onChange={(e) => setLoginEmail(e.target.value)}
-                  placeholder="name@ceramiso.co.il"
+                  value={gateEmailInput}
+                  onChange={(e) => setGateEmailInput(e.target.value)}
+                  placeholder="office@ceramiso.co.il"
                   className="w-full pr-11 pl-4 py-3 border border-stone-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:outline-none text-stone-900 text-left"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-stone-600 mb-1.5">
+                סיסמת גישה
+              </label>
+              <div className="relative">
+                <Lock className="w-5 h-5 text-stone-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="password"
+                  required
+                  dir="ltr"
+                  value={gatePasswordInput}
+                  onChange={(e) => setGatePasswordInput(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full pr-11 pl-4 py-3 border border-stone-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:outline-none text-stone-900 text-left"
+                />
+              </div>
+            </div>
+
+            <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={rememberGate}
+                onChange={(e) => setRememberGate(e.target.checked)}
+                className="w-4 h-4 rounded border-stone-300 text-amber-500 focus:ring-amber-500"
+              />
+              <span className="text-xs text-stone-600">זכור אימות חברה במכשיר זה</span>
+            </label>
+
+            <button
+              type="submit"
+              disabled={gateSubmitting}
+              className="w-full py-3 bg-stone-900 hover:bg-stone-800 text-white font-bold rounded-xl shadow transition disabled:opacity-50 cursor-pointer"
+            >
+              {gateSubmitting ? 'מאמת גישה...' : 'המשך לכניסת עובדים'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // --- GATE 2: Staff Username & Password Login (Unlocked only when signed in with office@ceramiso.co.il) ---
+  if (!isFullyLoggedIn) {
+    return (
+      <div dir="rtl" className="min-h-screen bg-stone-900 flex items-center justify-center p-4">
+        <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl">
+          <div className="text-center mb-6">
+            <div className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1 rounded-full text-xs font-semibold mb-3">
+              <ShieldCheck className="w-4 h-4" />
+              <span>מאומת מול {firebaseUser.email}</span>
+            </div>
+            <h1 className="text-2xl font-bold text-stone-900">כניסת משתמש מורשה</h1>
+            <p className="text-stone-500 text-sm mt-1">
+              הזן שם משתמש וסיסמה אישית שהוגדרו על ידי מנהל המערכת
+            </p>
+          </div>
+
+          {staffLoginError && (
+            <div className="bg-red-50 border border-red-200 text-red-700 text-xs p-3 rounded-xl mb-4 text-center">
+              {staffLoginError}
+            </div>
+          )}
+
+          <form onSubmit={handleStaffLogin} className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-stone-600 mb-1.5">
+                שם משתמש
+              </label>
+              <div className="relative">
+                <User className="w-5 h-5 text-stone-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  value={staffUsernameInput}
+                  onChange={(e) => setStaffUsernameInput(e.target.value)}
+                  placeholder="הזן שם משתמש"
+                  className="w-full pr-11 pl-4 py-3 border border-stone-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:outline-none text-stone-900"
                 />
               </div>
             </div>
@@ -822,13 +939,13 @@ export default function App() {
             <div>
               <label className="block text-xs font-semibold text-stone-600 mb-1.5">סיסמה</label>
               <div className="relative">
-                <Lock className="w-5 h-5 text-stone-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
+                <KeyRound className="w-5 h-5 text-stone-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
                 <input
                   type="password"
                   required
                   dir="ltr"
-                  value={loginPassword}
-                  onChange={(e) => setLoginPassword(e.target.value)}
+                  value={staffPasswordInput}
+                  onChange={(e) => setStaffPasswordInput(e.target.value)}
                   placeholder="••••••••"
                   className="w-full pr-11 pl-4 py-3 border border-stone-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:outline-none text-stone-900 text-left"
                 />
@@ -839,20 +956,27 @@ export default function App() {
               <label className="inline-flex items-center gap-2 cursor-pointer select-none">
                 <input
                   type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
+                  checked={rememberStaff}
+                  onChange={(e) => setRememberStaff(e.target.checked)}
                   className="w-4 h-4 rounded border-stone-300 text-amber-500 focus:ring-amber-500"
                 />
-                <span className="text-sm text-stone-700">זכור אותי במכשיר זה</span>
+                <span className="text-sm text-stone-700">זכור אותי</span>
               </label>
+
+              <button
+                type="button"
+                onClick={handleFullLogout}
+                className="text-xs text-stone-400 hover:text-stone-700 underline cursor-pointer"
+              >
+                ניתוק אימייל חברה
+              </button>
             </div>
 
             <button
               type="submit"
-              disabled={loggingIn}
-              className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-xl shadow transition disabled:opacity-50 cursor-pointer"
+              className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-xl shadow transition cursor-pointer"
             >
-              {loggingIn ? 'מתחבר...' : 'התחברות למערכת'}
+              כניסה למערכת
             </button>
           </form>
         </div>
@@ -896,21 +1020,33 @@ export default function App() {
               <div className="flex items-center gap-2 text-xs text-stone-400">
                 <span className="inline-flex items-center gap-1 text-stone-200 font-medium">
                   <User className="w-3.5 h-3.5 text-amber-400" />
-                  {currentDisplayName} ({authUser.email})
+                  מחובר: {currentDisplayName}
                 </span>
                 <span>•</span>
+                {!isAdmin && (
+                  <>
+                    <button
+                      onClick={handleSwitchStaffUser}
+                      className="hover:text-white underline cursor-pointer"
+                    >
+                      החלף משתמש
+                    </button>
+                    <span>•</span>
+                  </>
+                )}
                 <button
-                  onClick={handleLogout}
+                  onClick={handleFullLogout}
                   className="inline-flex items-center gap-1 hover:text-white underline cursor-pointer"
                 >
                   <LogOut className="w-3 h-3" />
-                  התנתק
+                  יציאה מלאה
                 </button>
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Admin Only: Manage Authorized Users & Notification Email */}
             {isAdmin && (
               <>
                 <button
@@ -919,7 +1055,7 @@ export default function App() {
                   className="flex items-center gap-1.5 bg-stone-800 hover:bg-stone-700 text-amber-300 text-xs font-semibold px-3 py-2.5 rounded-xl border border-stone-700 transition cursor-pointer"
                 >
                   <Users className="w-4 h-4" />
-                  <span>ניהול משתמשים והתראות</span>
+                  <span>רשימת מורשים והגדרות</span>
                 </button>
 
                 <button
@@ -975,7 +1111,6 @@ export default function App() {
               />
             </div>
 
-            {/* Type Filter: הכל / B2B / מלאי */}
             <div className="flex gap-1.5 bg-stone-100 p-1 rounded-xl">
               {['הכל', 'B2B', 'מלאי'].map((t) => (
                 <button
@@ -1030,7 +1165,6 @@ export default function App() {
                   className="bg-white rounded-2xl border border-stone-200 shadow-sm hover:shadow-md transition flex flex-col justify-between overflow-hidden"
                 >
                   <div>
-                    {/* Card Top Bar */}
                     <div className="p-4 border-b border-stone-100 flex items-start justify-between gap-2">
                       <div>
                         <div className="flex items-center gap-1.5 flex-wrap">
@@ -1074,7 +1208,6 @@ export default function App() {
                         )}
                       </div>
 
-                      {/* Edit (All) & Delete (Admin Only) */}
                       <div className="flex items-center gap-1">
                         <button
                           onClick={() => openEditModal(order)}
@@ -1095,7 +1228,6 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Card Details */}
                     <div className="p-4 space-y-2.5 text-sm">
                       <div className="flex justify-between">
                         <span className="text-stone-500">דגם / מק״ט:</span>
@@ -1131,7 +1263,6 @@ export default function App() {
                   </div>
 
                   <div>
-                    {/* Images Gallery Preview */}
                     {order.images && order.images.length > 0 && (
                       <div className="px-4 pb-3">
                         <p className="text-xs font-medium text-stone-500 mb-2 flex items-center gap-1">
@@ -1160,7 +1291,6 @@ export default function App() {
                       </div>
                     )}
 
-                    {/* Chat & Logs Buttons */}
                     <div className="px-4 pb-3 grid grid-cols-2 gap-2">
                       <button
                         type="button"
@@ -1186,7 +1316,6 @@ export default function App() {
                       </button>
                     </div>
 
-                    {/* Quick Confirm "התקבל" Button (Admin Only) */}
                     {isAdmin && order.status !== 'נמסר ללקוח' && (
                       <div className="px-4 pb-4">
                         <button
@@ -1224,7 +1353,6 @@ export default function App() {
             </div>
 
             <form onSubmit={handleSave} className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
-              {/* Mandatory Order Type Selector: B2B vs מלאי */}
               <div>
                 <label className="block text-xs font-semibold text-stone-600 mb-1.5">
                   סוג הזמנה (חובה לבחור) *
@@ -1257,7 +1385,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Conditional Mandatory Fields for B2B */}
               {formData.orderType === 'B2B' && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-indigo-50/60 p-3.5 rounded-xl border border-indigo-100">
                   <div>
@@ -1364,7 +1491,6 @@ export default function App() {
                 />
               </div>
 
-              {/* Multi-Image Upload Section */}
               <div>
                 <label className="block text-xs font-semibold text-stone-600 mb-1.5">
                   תמונות הדגם / תעודות (ניתן לבחור כמה תמונות יחד)
@@ -1425,14 +1551,14 @@ export default function App() {
         </div>
       )}
 
-      {/* Admin Panel Modal: User Management & Email Notification Settings */}
+      {/* ADMIN ONLY MODAL: Authorized Staff List & Email Notification Settings */}
       {isAdmin && isAdminModalOpen && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-40 flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl max-w-2xl w-full shadow-2xl overflow-hidden my-8">
             <div className="bg-stone-900 text-white px-6 py-4 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <ShieldCheck className="w-5 h-5 text-amber-400" />
-                <h2 className="text-lg font-bold">ניהול משתמשים והגדרות מנהל</h2>
+                <h2 className="text-lg font-bold">רשימת מורשים והגדרות מנהל</h2>
               </div>
               <button
                 onClick={() => setIsAdminModalOpen(false)}
@@ -1443,11 +1569,11 @@ export default function App() {
             </div>
 
             <div className="p-6 space-y-6 max-h-[82vh] overflow-y-auto">
-              {/* Section 1: Notification Email on New Order */}
+              {/* Notification Email Setting */}
               <div className="bg-amber-50/70 border border-amber-200 rounded-2xl p-4">
                 <h3 className="text-sm font-bold text-stone-900 flex items-center gap-2 mb-2">
                   <Mail className="w-4 h-4 text-amber-600" />
-                  אימייל לקבלת התראה בעת הוספת הזמנה חדשה
+                  אימייל לקבלת הודעה בעת הוספת הזמנה חדשה
                 </h3>
                 <form onSubmit={handleSaveNotificationEmail} className="flex flex-col sm:flex-row gap-2">
                   <input
@@ -1469,147 +1595,141 @@ export default function App() {
                 </form>
               </div>
 
-              {/* Section 2: Add New Employee User */}
+              {/* Add Authorized Staff Member */}
               <div className="border border-stone-200 rounded-2xl p-4">
                 <h3 className="text-sm font-bold text-stone-900 flex items-center gap-2 mb-3">
                   <UserPlus className="w-4 h-4 text-emerald-600" />
-                  הוספת משתמש חדש למערכת
+                  הוספת משתמש מורשה (שם משתמש + סיסמה)
                 </h3>
-                <form onSubmit={handleCreateUser} className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <form onSubmit={handleAddStaff} className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <input
                     type="text"
                     required
-                    value={newUserName}
-                    onChange={(e) => setNewUserName(e.target.value)}
-                    placeholder="שם העובד (ללוג)"
+                    value={newStaffUsername}
+                    onChange={(e) => setNewStaffUsername(e.target.value)}
+                    placeholder="שם משתמש (לדוגמה: דני)"
                     className="px-3 py-2 border border-stone-300 rounded-xl text-sm focus:ring-2 focus:ring-amber-500 focus:outline-none"
                   />
                   <input
-                    type="email"
-                    required
-                    dir="ltr"
-                    value={newUserEmail}
-                    onChange={(e) => setNewUserEmail(e.target.value)}
-                    placeholder="user@ceramiso.co.il"
-                    className="px-3 py-2 border border-stone-300 rounded-xl text-sm text-left focus:ring-2 focus:ring-amber-500 focus:outline-none"
-                  />
-                  <input
                     type="text"
                     required
                     dir="ltr"
-                    minLength={6}
-                    value={newUserPassword}
-                    onChange={(e) => setNewUserPassword(e.target.value)}
-                    placeholder="סיסמה (מינ׳ 6 תווים)"
+                    value={newStaffPassword}
+                    onChange={(e) => setNewStaffPassword(e.target.value)}
+                    placeholder="סיסמה לעובד"
                     className="px-3 py-2 border border-stone-300 rounded-xl text-sm text-left focus:ring-2 focus:ring-amber-500 focus:outline-none"
                   />
                   <button
                     type="submit"
-                    disabled={creatingUser}
-                    className="sm:col-span-3 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-xl shadow-xs transition disabled:opacity-50 cursor-pointer"
+                    disabled={creatingStaff}
+                    className="py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-xl shadow-xs transition disabled:opacity-50 cursor-pointer"
                   >
-                    {creatingUser ? 'יוצר משתמש...' : 'צור משתמש חדש'}
+                    {creatingStaff ? 'מוסיף...' : 'הוסף לרשימה'}
                   </button>
                 </form>
               </div>
 
-              {/* Section 3: Existing Users List */}
+              {/* Authorized Staff List */}
               <div>
                 <h3 className="text-sm font-bold text-stone-900 mb-2.5">
-                  משתמשים רשומים ({appUsers.length})
+                  רשימת מורשים פעילה ({staffList.length})
                 </h3>
-                {appUsers.length === 0 ? (
+                {staffList.length === 0 ? (
                   <p className="text-xs text-stone-500 bg-stone-50 p-4 rounded-xl text-center">
-                    טרם נוספו עובדים נוספים מעבר למנהל המערכת ({ADMIN_EMAIL}).
+                    טרם הוגדרו עובדים ברשימת המורשים. הוסף למעלה שם משתמש וסיסמה לכל עובד.
                   </p>
                 ) : (
                   <div className="space-y-2">
-                    {appUsers.map((u) => (
+                    {staffList.map((st) => (
                       <div
-                        key={u.id}
+                        key={st.id}
                         className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-2 ${
-                          u.active
+                          st.active
                             ? 'bg-white border-stone-200'
                             : 'bg-red-50/50 border-red-200 opacity-75'
                         }`}
                       >
-                        <div>
-                          {editingUserId === u.id ? (
-                            <div className="flex items-center gap-1.5">
-                              <input
-                                type="text"
-                                value={editUserNameValue}
-                                onChange={(e) => setEditUserNameValue(e.target.value)}
-                                className="px-2 py-1 border border-stone-300 rounded-lg text-xs"
-                              />
-                              <button
-                                onClick={() => handleUpdateUserName(u.id)}
-                                className="px-2 py-1 bg-emerald-600 text-white text-xs rounded-lg cursor-pointer"
-                              >
-                                שמור
-                              </button>
-                              <button
-                                onClick={() => setEditingUserId(null)}
-                                className="px-2 py-1 bg-stone-200 text-xs rounded-lg cursor-pointer"
-                              >
-                                ביטול
-                              </button>
-                            </div>
-                          ) : (
+                        {editingStaffId === st.id ? (
+                          <div className="flex flex-wrap items-center gap-2 flex-1">
+                            <input
+                              type="text"
+                              value={editStaffUsername}
+                              onChange={(e) => setEditStaffUsername(e.target.value)}
+                              className="px-2.5 py-1 border border-stone-300 rounded-lg text-xs"
+                              placeholder="שם משתמש"
+                            />
+                            <input
+                              type="text"
+                              dir="ltr"
+                              value={editStaffPassword}
+                              onChange={(e) => setEditStaffPassword(e.target.value)}
+                              className="px-2.5 py-1 border border-stone-300 rounded-lg text-xs text-left"
+                              placeholder="סיסמה"
+                            />
+                            <button
+                              onClick={() => handleSaveStaffEdit(st.id)}
+                              className="px-2.5 py-1 bg-emerald-600 text-white text-xs font-bold rounded-lg cursor-pointer"
+                            >
+                              שמור
+                            </button>
+                            <button
+                              onClick={() => setEditingStaffId(null)}
+                              className="px-2.5 py-1 bg-stone-200 text-xs rounded-lg cursor-pointer"
+                            >
+                              ביטול
+                            </button>
+                          </div>
+                        ) : (
+                          <div>
                             <div className="flex items-center gap-2">
-                              <span className="font-bold text-sm text-stone-900">{u.name}</span>
-                              {!u.active && (
+                              <span className="font-bold text-sm text-stone-900">{st.username}</span>
+                              {!st.active && (
                                 <span className="text-[10px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold">
                                   מושבת
                                 </span>
                               )}
                             </div>
-                          )}
-                          <p className="text-xs text-stone-500" dir="ltr">
-                            {u.email}
-                          </p>
-                        </div>
+                            <p className="text-xs text-stone-500">
+                              סיסמה: <span dir="ltr" className="font-mono">{st.password}</span>
+                            </p>
+                          </div>
+                        )}
 
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingUserId(u.id);
-                              setEditUserNameValue(u.name);
-                            }}
-                            title="ערוך שם"
-                            className="p-1.5 text-stone-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg cursor-pointer"
-                          >
-                            <Edit3 className="w-4 h-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleResetUserPassword(u.email)}
-                            title="שלח מייל איפוס סיסמה"
-                            className="p-1.5 text-stone-500 hover:text-amber-600 hover:bg-amber-50 rounded-lg cursor-pointer"
-                          >
-                            <KeyRound className="w-4 h-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleToggleUserActive(u)}
-                            className={`px-2.5 py-1 rounded-lg text-xs font-semibold cursor-pointer ${
-                              u.active
-                                ? 'bg-stone-100 text-stone-700 hover:bg-stone-200'
-                                : 'bg-emerald-100 text-emerald-800'
-                            }`}
-                          >
-                            {u.active ? 'השבת' : 'הפעל'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteUserRecord(u)}
-                            title="מחק משתמש"
-                            className="p-1.5 text-stone-500 hover:text-red-600 hover:bg-red-50 rounded-lg cursor-pointer"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
+                        {editingStaffId !== st.id && (
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingStaffId(st.id);
+                                setEditStaffUsername(st.username);
+                                setEditStaffPassword(st.password);
+                              }}
+                              title="ערוך שם או סיסמה"
+                              className="p-1.5 text-stone-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg cursor-pointer"
+                            >
+                              <Edit3 className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleStaffActive(st)}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-semibold cursor-pointer ${
+                                st.active
+                                  ? 'bg-stone-100 text-stone-700 hover:bg-stone-200'
+                                  : 'bg-emerald-100 text-emerald-800'
+                              }`}
+                            >
+                              {st.active ? 'השבת' : 'הפעל'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteStaff(st)}
+                              title="מחק מרשימת המורשים"
+                              className="p-1.5 text-stone-500 hover:text-red-600 hover:bg-red-50 rounded-lg cursor-pointer"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
