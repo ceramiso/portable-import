@@ -1,6 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { initializeApp, getApps } from 'firebase/app';
+import {
+  getAuth,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  setPersistence,
+  browserLocalPersistence,
+  browserSessionPersistence,
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
+  User as FirebaseUser,
+} from 'firebase/auth';
 import {
   getFirestore,
   collection,
@@ -25,7 +36,6 @@ import {
   Clock,
   Truck,
   Package,
-  Phone,
   Calendar,
   FileText,
   ZoomIn,
@@ -35,8 +45,15 @@ import {
   History,
   MessageSquare,
   Send,
-  Cloud,
-  CloudOff,
+  ShieldCheck,
+  Users,
+  Mail,
+  Lock,
+  Hash,
+  Layers,
+  Building2,
+  UserPlus,
+  KeyRound,
   Download,
   Upload,
 } from 'lucide-react';
@@ -55,9 +72,16 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// Fixed permanent collection path so software updates NEVER lose cloud data
-const COLLECTION_PATH = ['artifacts', 'ceramic-orders', 'public', 'data', 'orders'] as const;
-const LOCAL_BACKUP_KEY = 'ceramic_orders_permanent_backup_v1';
+// Secondary Firebase app instance so Admin can create new employee accounts without logging themselves out
+const secondaryApp =
+  getApps().find((a) => a.name === 'SecondaryApp') ||
+  initializeApp(firebaseConfig, 'SecondaryApp');
+const secondaryAuth = getAuth(secondaryApp);
+
+const ADMIN_EMAIL = 'izak@ceramiso.co.il';
+const ORDERS_PATH = ['artifacts', 'ceramic-orders', 'public', 'data', 'orders'] as const;
+const USERS_PATH = ['artifacts', 'ceramic-orders', 'public', 'data', 'users'] as const;
+const SETTINGS_DOC_PATH = ['artifacts', 'ceramic-orders', 'public', 'data', 'settings', 'general'] as const;
 
 interface LogEntry {
   user: string;
@@ -71,10 +95,20 @@ interface ChatMessage {
   timestamp: number;
 }
 
+interface AppUserRecord {
+  id: string;
+  name: string;
+  email: string;
+  role: 'admin' | 'user';
+  active: boolean;
+  createdAt: number;
+}
+
 interface Order {
   id: string;
+  orderType: 'מלאי' | 'B2B';
   customerName: string;
-  phone: string;
+  orderNumber: string;
   modelName: string;
   quantity: string;
   supplier: string;
@@ -154,31 +188,42 @@ const compressImage = (file: File): Promise<string> => {
 };
 
 export default function App() {
-  const [currentUser, setCurrentUser] = useState<string>(() => {
-    return localStorage.getItem('ceramic_user_name') || '';
-  });
-  const [nameInput, setNameInput] = useState('');
+  // Auth State
+  const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(true);
+  const [loginError, setLoginError] = useState('');
+  const [loggingIn, setLoggingIn] = useState(false);
 
-  // Load local backup immediately so data is never lost across updates or offline moments
-  const [orders, setOrders] = useState<Order[]>(() => {
-    try {
-      const saved = localStorage.getItem(LOCAL_BACKUP_KEY);
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  // Data State
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [appUsers, setAppUsers] = useState<AppUserRecord[]>([]);
+  const [notificationEmail, setNotificationEmail] = useState<string>(ADMIN_EMAIL);
 
-  const [cloudStatus, setCloudStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
-  const [cloudErrorMsg, setCloudErrorMsg] = useState<string>('');
+  // Filters
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('הכל');
+  const [typeFilter, setTypeFilter] = useState<string>('הכל');
 
-  // Modals
+  // Order Add/Edit Modal
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
   const [saving, setSaving] = useState(false);
 
+  // Admin Panel Modal (Users & Notification Email)
+  const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
+  const [newUserName, setNewUserName] = useState('');
+  const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [creatingUser, setCreatingUser] = useState(false);
+  const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [editUserNameValue, setEditUserNameValue] = useState('');
+  const [adminEmailInput, setAdminEmailInput] = useState(ADMIN_EMAIL);
+  const [savingSettings, setSavingSettings] = useState(false);
+
+  // Chat & Logs Modal
   const [activeDetailsOrderId, setActiveDetailsOrderId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'chat' | 'logs'>('chat');
   const [newMessageText, setNewMessageText] = useState('');
@@ -188,8 +233,9 @@ export default function App() {
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const [formData, setFormData] = useState({
+    orderType: 'B2B' as 'מלאי' | 'B2B',
     customerName: '',
-    phone: '',
+    orderNumber: '',
     modelName: '',
     quantity: '',
     supplier: '',
@@ -199,87 +245,245 @@ export default function App() {
     images: [] as string[],
   });
 
-  // Persist local mirror whenever orders change
-  const saveLocalMirror = (updatedOrders: Order[]) => {
-    setOrders(updatedOrders);
+  const isAdmin = (authUser?.email || '').toLowerCase() === ADMIN_EMAIL.toLowerCase();
+
+  // Resolve current user's display name from Firestore users list or email prefix
+  const currentUserRecord = appUsers.find(
+    (u) => u.email.toLowerCase() === (authUser?.email || '').toLowerCase()
+  );
+  const currentDisplayName = isAdmin
+    ? currentUserRecord?.name || 'איציק (מנהל)'
+    : currentUserRecord?.name || authUser?.email?.split('@')[0] || 'משתמש';
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setAuthUser(user);
+      setAuthLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  // Load Orders, Users & Settings once authenticated
+  useEffect(() => {
+    if (!authUser) {
+      setOrders([]);
+      setAppUsers([]);
+      return;
+    }
+
+    const ordersRef = collection(db, ...ORDERS_PATH);
+    const qOrders = query(ordersRef, orderBy('createdAt', 'desc'));
+    const unsubOrders = onSnapshot(qOrders, (snapshot) => {
+      const list: Order[] = snapshot.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: d.id,
+          orderType: data.orderType === 'מלאי' ? 'מלאי' : 'B2B',
+          customerName: data.customerName || '',
+          orderNumber: data.orderNumber || '',
+          modelName: data.modelName || '',
+          quantity: data.quantity || '',
+          supplier: data.supplier || '',
+          status: data.status || 'הוזמן מספק',
+          eta: data.eta || '',
+          notes: data.notes || '',
+          images: Array.isArray(data.images) ? data.images : [],
+          logs: Array.isArray(data.logs) ? data.logs : [],
+          messages: Array.isArray(data.messages) ? data.messages : [],
+          createdBy: data.createdBy || '',
+          createdAt: data.createdAt || Date.now(),
+        };
+      });
+      setOrders(list);
+    });
+
+    const usersRef = collection(db, ...USERS_PATH);
+    const unsubUsers = onSnapshot(usersRef, (snapshot) => {
+      const list: AppUserRecord[] = snapshot.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: d.id,
+          name: data.name || '',
+          email: data.email || '',
+          role: data.role === 'admin' ? 'admin' : 'user',
+          active: data.active !== false,
+          createdAt: data.createdAt || Date.now(),
+        };
+      });
+      setAppUsers(list);
+    });
+
+    const settingsRef = doc(db, ...SETTINGS_DOC_PATH);
+    const unsubSettings = onSnapshot(settingsRef, (snap) => {
+      if (snap.exists()) {
+        const email = snap.data().notificationEmail || ADMIN_EMAIL;
+        setNotificationEmail(email);
+        setAdminEmailInput(email);
+      }
+    });
+
+    return () => {
+      unsubOrders();
+      unsubUsers();
+      unsubSettings();
+    };
+  }, [authUser]);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError('');
+    setLoggingIn(true);
+
     try {
-      localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify(updatedOrders));
-    } catch (e) {
-      console.warn('LocalStorage quota warning:', e);
+      await setPersistence(
+        auth,
+        rememberMe ? browserLocalPersistence : browserSessionPersistence
+      );
+      await signInWithEmailAndPassword(auth, loginEmail.trim(), loginPassword);
+    } catch (err: any) {
+      console.error('Login error:', err);
+      setLoginError('אימייל או סיסמה שגויים, או שאין הרשאת גישה למערכת.');
+    } finally {
+      setLoggingIn(false);
     }
   };
 
+  const handleLogout = async () => {
+    await signOut(auth);
+    setLoginPassword('');
+  };
+
+  // Block disabled users (except admin)
   useEffect(() => {
-    signInAnonymously(auth).catch((err) => {
-      console.error('Auth error:', err);
-      setCloudStatus('error');
-      setCloudErrorMsg('שגיאת הרשאת דומיין ב-Firebase (יש לאשר את הדומיין ב-Authentication)');
-    });
+    if (authUser && !isAdmin && currentUserRecord && currentUserRecord.active === false) {
+      alert('המשתמש שלך הושבת על ידי מנהל המערכת.');
+      signOut(auth);
+    }
+  }, [authUser, isAdmin, currentUserRecord]);
 
-    const unsubAuth = onAuthStateChanged(auth, (user) => {
-      if (!user) return;
-
-      const ordersRef = collection(db, ...COLLECTION_PATH);
-      const q = query(ordersRef, orderBy('createdAt', 'desc'));
-
-      const unsubOrders = onSnapshot(
-        q,
-        (snapshot) => {
-          setCloudStatus('connected');
-          setCloudErrorMsg('');
-          const list: Order[] = snapshot.docs.map((d) => {
-            const data = d.data();
-            return {
-              id: d.id,
-              customerName: data.customerName || '',
-              phone: data.phone || '',
-              modelName: data.modelName || '',
-              quantity: data.quantity || '',
-              supplier: data.supplier || '',
-              status: data.status || 'הוזמן מספק',
-              eta: data.eta || '',
-              notes: data.notes || '',
-              images: Array.isArray(data.images) ? data.images : [],
-              logs: Array.isArray(data.logs) ? data.logs : [],
-              messages: Array.isArray(data.messages) ? data.messages : [],
-              createdBy: data.createdBy || '',
-              createdAt: data.createdAt || Date.now(),
-            };
-          });
-          saveLocalMirror(list);
-        },
-        (error) => {
-          console.error('Firestore read error:', error);
-          setCloudStatus('error');
-          setCloudErrorMsg('אין גישה לענן Firestore - בדוק את לשונית Rules ב-Firebase');
-        }
-      );
-
-      return () => unsubOrders();
-    });
-
-    return () => unsubAuth();
-  }, []);
-
-  const handleLogin = (e: React.FormEvent) => {
+  // --- Admin User Management Handlers ---
+  const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmed = nameInput.trim();
-    if (!trimmed) return;
-    localStorage.setItem('ceramic_user_name', trimmed);
-    setCurrentUser(trimmed);
+    if (!isAdmin) return;
+    if (!newUserName.trim() || !newUserEmail.trim() || newUserPassword.length < 6) {
+      alert('נא למלא שם מלא, אימייל תקין וסיסמה של לפחות 6 תווים.');
+      return;
+    }
+
+    setCreatingUser(true);
+    try {
+      const emailClean = newUserEmail.trim().toLowerCase();
+      const cred = await createUserWithEmailAndPassword(
+        secondaryAuth,
+        emailClean,
+        newUserPassword
+      );
+      await signOut(secondaryAuth);
+
+      await setDoc(doc(db, ...USERS_PATH, cred.user.uid), {
+        name: newUserName.trim(),
+        email: emailClean,
+        role: emailClean === ADMIN_EMAIL.toLowerCase() ? 'admin' : 'user',
+        active: true,
+        createdAt: Date.now(),
+      });
+
+      setNewUserName('');
+      setNewUserEmail('');
+      setNewUserPassword('');
+      alert('המשתמש נוצר בהצלחה ויכול להתחבר כעת!');
+    } catch (err: any) {
+      console.error('Create user error:', err);
+      if (err?.code === 'auth/email-already-in-use') {
+        alert('כתובת האימייל הזו כבר רשומה במערכת.');
+      } else {
+        alert('שגיאה ביצירת המשתמש. ודא שכתובת האימייל תקינה והסיסמה בת 6 תווים לפחות.');
+      }
+    } finally {
+      setCreatingUser(false);
+    }
   };
 
-  const handleSwitchUser = () => {
-    localStorage.removeItem('ceramic_user_name');
-    setNameInput(currentUser);
-    setCurrentUser('');
+  const handleUpdateUserName = async (userId: string) => {
+    if (!isAdmin || !editUserNameValue.trim()) return;
+    try {
+      await updateDoc(doc(db, ...USERS_PATH, userId), {
+        name: editUserNameValue.trim(),
+      });
+      setEditingUserId(null);
+    } catch {
+      alert('שגיאה בעדכון שם המשתמש');
+    }
   };
 
+  const handleToggleUserActive = async (userRec: AppUserRecord) => {
+    if (!isAdmin) return;
+    if (userRec.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+      alert('לא ניתן להשבית את מנהל המערכת הראשי.');
+      return;
+    }
+    try {
+      await updateDoc(doc(db, ...USERS_PATH, userRec.id), {
+        active: !userRec.active,
+      });
+    } catch {
+      alert('שגיאה בשינוי סטטוס המשתמש');
+    }
+  };
+
+  const handleDeleteUserRecord = async (userRec: AppUserRecord) => {
+    if (!isAdmin) return;
+    if (userRec.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+      alert('לא ניתן למחוק את מנהל המערכת הראשי.');
+      return;
+    }
+    const ok = window.confirm(`האם להסיר את המשתמש "${userRec.name}" (${userRec.email}) מהמערכת?`);
+    if (!ok) return;
+
+    try {
+      await updateDoc(doc(db, ...USERS_PATH, userRec.id), {
+        active: false,
+      });
+      await deleteDoc(doc(db, ...USERS_PATH, userRec.id));
+    } catch {
+      alert('שגיאה במחיקת המשתמש');
+    }
+  };
+
+  const handleResetUserPassword = async (email: string) => {
+    try {
+      await sendPasswordResetEmail(auth, email);
+      alert(`נשלח קישור לאיפוס סיסמה לכתובת: ${email}`);
+    } catch {
+      alert('שגיאה בשליחת מייל איפוס סיסמה');
+    }
+  };
+
+  const handleSaveNotificationEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isAdmin) return;
+    setSavingSettings(true);
+    try {
+      await setDoc(
+        doc(db, ...SETTINGS_DOC_PATH),
+        { notificationEmail: adminEmailInput.trim() },
+        { merge: true }
+      );
+      alert('כתובת האימייל לקבלת התראות נשמרה בהצלחה!');
+    } catch {
+      alert('שגיאה בשמירת ההגדרות');
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  // --- Order Handlers ---
   const openNewModal = () => {
     setEditingOrder(null);
     setFormData({
+      orderType: 'B2B',
       customerName: '',
-      phone: '',
+      orderNumber: '',
       modelName: '',
       quantity: '',
       supplier: '',
@@ -294,8 +498,9 @@ export default function App() {
   const openEditModal = (order: Order) => {
     setEditingOrder(order);
     setFormData({
+      orderType: order.orderType || 'B2B',
       customerName: order.customerName,
-      phone: order.phone,
+      orderNumber: order.orderNumber || '',
       modelName: order.modelName,
       quantity: order.quantity,
       supplier: order.supplier,
@@ -336,9 +541,12 @@ export default function App() {
 
   const describeChanges = (oldOrder: Order, newData: typeof formData): string => {
     const changes: string[] = [];
+    if (oldOrder.orderType !== newData.orderType)
+      changes.push(`סוג הזמנה (${oldOrder.orderType} ← ${newData.orderType})`);
     if (oldOrder.customerName !== newData.customerName)
-      changes.push(`שם לקוח (${oldOrder.customerName} ← ${newData.customerName})`);
-    if (oldOrder.phone !== newData.phone) changes.push(`טלפון`);
+      changes.push(`שם לקוח (${oldOrder.customerName || 'ריק'} ← ${newData.customerName || 'ריק'})`);
+    if (oldOrder.orderNumber !== newData.orderNumber)
+      changes.push(`מספר הזמנה (${oldOrder.orderNumber || 'ריק'} ← ${newData.orderNumber || 'ריק'})`);
     if (oldOrder.modelName !== newData.modelName)
       changes.push(`דגם (${oldOrder.modelName} ← ${newData.modelName})`);
     if (oldOrder.quantity !== newData.quantity)
@@ -356,108 +564,149 @@ export default function App() {
     return changes.length > 0 ? `ערך: ${changes.join(', ')}` : 'שמר עריכה ללא שינוי שדות';
   };
 
+  const triggerNewOrderEmail = (data: typeof formData) => {
+    if (!notificationEmail) return;
+    const subject =
+      data.orderType === 'B2B'
+        ? `הזמנת יבוא חדשה (B2B) - ${data.customerName} | הזמנה #${data.orderNumber}`
+        : `הזמנת יבוא חדשה למלאי - ${data.modelName}`;
+
+    const bodyLines = [
+      `שלום,`,
+      `נוספה הזמנת יבוא חדשה למערכת על ידי ${currentDisplayName}:`,
+      ``,
+      `סוג הזמנה: ${data.orderType}`,
+      ...(data.orderType === 'B2B'
+        ? [`שם לקוח: ${data.customerName}`, `מספר הזמנה: ${data.orderNumber}`]
+        : []),
+      `דגם / מק"ט: ${data.modelName}`,
+      `כמות / מ"ר: ${data.quantity || '-'}`,
+      `ספק / מפעל: ${data.supplier || '-'}`,
+      `סטטוס: ${data.status}`,
+      `צפי הגעה: ${data.eta || '-'}`,
+      `הערות: ${data.notes || '-'}`,
+    ];
+
+    const mailtoUrl = `mailto:${encodeURIComponent(notificationEmail)}?subject=${encodeURIComponent(
+      subject
+    )}&body=${encodeURIComponent(bodyLines.join('\n'))}`;
+    window.open(mailtoUrl, '_blank');
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.customerName.trim() || !formData.modelName.trim()) {
-      alert('נא למלא לפחות שם לקוח ודגם קרמיקה');
+
+    if (!formData.modelName.trim()) {
+      alert('נא למלא דגם / מק״ט קרמיקה');
       return;
     }
 
+    if (formData.orderType === 'B2B') {
+      if (!formData.customerName.trim() || !formData.orderNumber.trim()) {
+        alert('בהזמנת B2B חובה למלא שם לקוח ומספר הזמנה');
+        return;
+      }
+    }
+
+    // Prevent non-admin from setting status directly to 'נמסר ללקוח'
+    if (!isAdmin && formData.status === 'נמסר ללקוח') {
+      alert('רק מנהל המערכת יכול לסמן הזמנה כ"נמסר ללקוח".');
+      return;
+    }
+
+    const cleanedPayload = {
+      orderType: formData.orderType,
+      customerName: formData.orderType === 'B2B' ? formData.customerName.trim() : '',
+      orderNumber: formData.orderType === 'B2B' ? formData.orderNumber.trim() : '',
+      modelName: formData.modelName.trim(),
+      quantity: formData.quantity.trim(),
+      supplier: formData.supplier.trim(),
+      status: formData.status,
+      eta: formData.eta,
+      notes: formData.notes.trim(),
+      images: formData.images,
+    };
+
     setSaving(true);
     try {
-      const ordersRef = collection(db, ...COLLECTION_PATH);
+      const ordersRef = collection(db, ...ORDERS_PATH);
       if (editingOrder) {
-        const actionText = describeChanges(editingOrder, formData);
+        const actionText = describeChanges(editingOrder, { ...formData, ...cleanedPayload });
         const logEntry: LogEntry = {
-          user: currentUser,
+          user: currentDisplayName,
           action: actionText,
           timestamp: Date.now(),
         };
-
-        // Update local backup immediately
-        const updatedList = orders.map((o) =>
-          o.id === editingOrder.id
-            ? { ...o, ...formData, logs: [...(o.logs || []), logEntry] }
-            : o
-        );
-        saveLocalMirror(updatedList);
-
-        const docRef = doc(db, ...COLLECTION_PATH, editingOrder.id);
+        const docRef = doc(db, ...ORDERS_PATH, editingOrder.id);
         await updateDoc(docRef, {
-          ...formData,
+          ...cleanedPayload,
           logs: arrayUnion(logEntry),
         });
       } else {
         const initialLog: LogEntry = {
-          user: currentUser,
-          action: 'יצר את ההזמנה',
+          user: currentDisplayName,
+          action: `יצר הזמנת ${cleanedPayload.orderType}`,
           timestamp: Date.now(),
         };
-        const newPayload = {
-          ...formData,
-          createdBy: currentUser,
+        await addDoc(ordersRef, {
+          ...cleanedPayload,
+          createdBy: currentDisplayName,
           createdAt: Date.now(),
           logs: [initialLog],
           messages: [],
-        };
+        });
 
-        const docRef = await addDoc(ordersRef, newPayload);
-        saveLocalMirror([{ id: docRef.id, ...newPayload }, ...orders]);
+        triggerNewOrderEmail({ ...formData, ...cleanedPayload });
       }
       setIsModalOpen(false);
     } catch (err) {
       console.error('Save error:', err);
-      alert('ההזמנה נשמרה מקומית במכשיר, אך השמירה לענן נכשלה. ודא שהגדרת Rules ב-Firebase או שהתמונות אינן כבדות מדי.');
-      setIsModalOpen(false);
+      alert('שגיאה בשמירה לענן. ודא שהגדרת את כללי האבטחה ב-Firebase.');
     } finally {
       setSaving(false);
     }
   };
 
   const handleConfirmReceived = async (order: Order) => {
+    if (!isAdmin) return;
     const confirmed = window.confirm('האם אתה בטוח שאתה רוצה לאשר');
     if (!confirmed) return;
 
-    const logEntry: LogEntry = {
-      user: currentUser,
-      action: 'אישר קבלה ומסירה ללקוח ("התקבל")',
-      timestamp: Date.now(),
-    };
-
-    const updatedList = orders.map((o) =>
-      o.id === order.id
-        ? { ...o, status: 'נמסר ללקוח' as const, logs: [...(o.logs || []), logEntry] }
-        : o
-    );
-    saveLocalMirror(updatedList);
-
     try {
-      const docRef = doc(db, ...COLLECTION_PATH, order.id);
+      const logEntry: LogEntry = {
+        user: currentDisplayName,
+        action: 'אישר אספקה ומסירה ("התקבל")',
+        timestamp: Date.now(),
+      };
+      const docRef = doc(db, ...ORDERS_PATH, order.id);
       await updateDoc(docRef, {
         status: 'נמסר ללקוח',
         logs: arrayUnion(logEntry),
       });
     } catch (err) {
       console.error('Status update error:', err);
+      alert('שגיאה באישור ההזמנה');
     }
   };
 
   const handleDelete = async (order: Order) => {
-    const confirmed = window.confirm(
-      `האם למחוק לצמיתות את ההזמנה של "${order.customerName}" (${order.modelName})?`
-    );
+    if (!isAdmin) return;
+    const title =
+      order.orderType === 'B2B'
+        ? `${order.customerName} (הזמנה #${order.orderNumber})`
+        : `הזמנת מלאי - ${order.modelName}`;
+    const confirmed = window.confirm(`האם למחוק לצמיתות את "${title}"?`);
     if (!confirmed) return;
 
-    saveLocalMirror(orders.filter((o) => o.id !== order.id));
-    if (activeDetailsOrderId === order.id) {
-      setActiveDetailsOrderId(null);
-    }
-
     try {
-      const docRef = doc(db, ...COLLECTION_PATH, order.id);
+      const docRef = doc(db, ...ORDERS_PATH, order.id);
       await deleteDoc(docRef);
+      if (activeDetailsOrderId === order.id) {
+        setActiveDetailsOrderId(null);
+      }
     } catch (err) {
       console.error('Delete error:', err);
+      alert('שגיאה במחיקת ההזמנה');
     }
   };
 
@@ -466,45 +715,38 @@ export default function App() {
     if (!activeDetailsOrderId || !newMessageText.trim()) return;
 
     setSendingMsg(true);
-    const msg: ChatMessage = {
-      user: currentUser,
-      text: newMessageText.trim(),
-      timestamp: Date.now(),
-    };
-
-    const updatedList = orders.map((o) =>
-      o.id === activeDetailsOrderId
-        ? { ...o, messages: [...(o.messages || []), msg] }
-        : o
-    );
-    saveLocalMirror(updatedList);
-    setNewMessageText('');
-
     try {
-      const docRef = doc(db, ...COLLECTION_PATH, activeDetailsOrderId);
+      const msg: ChatMessage = {
+        user: currentDisplayName,
+        text: newMessageText.trim(),
+        timestamp: Date.now(),
+      };
+      const docRef = doc(db, ...ORDERS_PATH, activeDetailsOrderId);
       await updateDoc(docRef, {
         messages: arrayUnion(msg),
       });
+      setNewMessageText('');
     } catch (err) {
       console.error('Chat send error:', err);
+      alert('שגיאה בשליחת ההודעה');
     } finally {
       setSendingMsg(false);
     }
   };
 
-  // Manual Export / Import Backup (100% immune to any update)
   const handleExportBackup = () => {
     const dataStr = JSON.stringify(orders, null, 2);
     const blob = new Blob([dataStr], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `ceramic-orders-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `ceramiso-orders-backup-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
   const handleImportBackup = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!isAdmin) return;
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -515,52 +757,102 @@ export default function App() {
 
       for (const ord of importedOrders) {
         const { id, ...rest } = ord;
-        const docRef = doc(db, ...COLLECTION_PATH, id || `imp_${Date.now()}_${Math.random()}`);
+        const docRef = doc(db, ...ORDERS_PATH, id || `imp_${Date.now()}_${Math.random()}`);
         await setDoc(docRef, rest, { merge: true });
       }
-      alert(`שוחזרו בהצלחה ${importedOrders.length} הזמנות לענן!`);
+      alert(`שוחזרו בהצלחה ${importedOrders.length} הזמנות!`);
     } catch {
-      alert('קובץ הגיבוי אינו תקין או שאין הרשאת כתיבה לענן.');
+      alert('קובץ הגיבוי אינו תקין.');
     }
     e.target.value = '';
   };
 
-  if (!currentUser) {
+  // --- Loading Screen ---
+  if (authLoading) {
     return (
-      <div dir="rtl" className="min-h-screen bg-stone-900 flex items-center justify-center p-4">
-        <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl text-center">
-          <div className="w-16 h-16 rounded-2xl bg-amber-500 flex items-center justify-center text-stone-950 font-bold text-3xl mx-auto shadow-md mb-4">
+      <div dir="rtl" className="min-h-screen bg-stone-900 flex items-center justify-center text-white">
+        <div className="text-center">
+          <div className="w-12 h-12 rounded-2xl bg-amber-500 text-stone-950 font-bold text-2xl flex items-center justify-center mx-auto mb-3 animate-pulse">
             ק
           </div>
-          <h1 className="text-2xl font-bold text-stone-900">ניהול הזמנות יבוא קרמיקה</h1>
-          <p className="text-stone-500 text-sm mt-1 mb-6">
-            הזן את שמך כדי להיכנס למערכת ולתעד פעולות והתכתבויות
-          </p>
+          <p className="text-sm text-stone-300">טוען מערכת מאובטחת...</p>
+        </div>
+      </div>
+    );
+  }
 
-          <form onSubmit={handleLogin} className="space-y-4 text-right">
+  // --- Secure Login Screen ---
+  if (!authUser) {
+    return (
+      <div dir="rtl" className="min-h-screen bg-stone-900 flex items-center justify-center p-4">
+        <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl">
+          <div className="text-center mb-6">
+            <div className="w-16 h-16 rounded-2xl bg-amber-500 flex items-center justify-center text-stone-950 font-bold text-3xl mx-auto shadow-md mb-4">
+              ק
+            </div>
+            <h1 className="text-2xl font-bold text-stone-900">קרמיסו - ניהול הזמנות יבוא</h1>
+            <p className="text-stone-500 text-sm mt-1">גישה מאובטחת לעובדי החברה בלבד</p>
+          </div>
+
+          {loginError && (
+            <div className="bg-red-50 border border-red-200 text-red-700 text-xs p-3 rounded-xl mb-4 text-center">
+              {loginError}
+            </div>
+          )}
+
+          <form onSubmit={handleLogin} className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-stone-600 mb-1.5">
-                שם העובד / משתמש
+                כתובת אימייל
               </label>
               <div className="relative">
-                <User className="w-5 h-5 text-stone-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
+                <Mail className="w-5 h-5 text-stone-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
                 <input
-                  type="text"
+                  type="email"
                   required
-                  autoFocus
-                  value={nameInput}
-                  onChange={(e) => setNameInput(e.target.value)}
-                  placeholder="לדוגמה: מאיר, דני, שירות לקוחות..."
-                  className="w-full pr-11 pl-4 py-3 border border-stone-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:outline-none text-stone-900"
+                  dir="ltr"
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  placeholder="name@ceramiso.co.il"
+                  className="w-full pr-11 pl-4 py-3 border border-stone-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:outline-none text-stone-900 text-left"
                 />
               </div>
             </div>
 
+            <div>
+              <label className="block text-xs font-semibold text-stone-600 mb-1.5">סיסמה</label>
+              <div className="relative">
+                <Lock className="w-5 h-5 text-stone-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="password"
+                  required
+                  dir="ltr"
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full pr-11 pl-4 py-3 border border-stone-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:outline-none text-stone-900 text-left"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="w-4 h-4 rounded border-stone-300 text-amber-500 focus:ring-amber-500"
+                />
+                <span className="text-sm text-stone-700">זכור אותי במכשיר זה</span>
+              </label>
+            </div>
+
             <button
               type="submit"
-              className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-xl shadow transition cursor-pointer"
+              disabled={loggingIn}
+              className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-xl shadow transition disabled:opacity-50 cursor-pointer"
             >
-              כניסה למערכת
+              {loggingIn ? 'מתחבר...' : 'התחברות למערכת'}
             </button>
           </form>
         </div>
@@ -571,11 +863,12 @@ export default function App() {
   const filteredOrders = orders.filter((order) => {
     const matchesSearch =
       order.customerName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      order.orderNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
       order.modelName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      order.supplier.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      order.phone.includes(searchTerm);
+      order.supplier.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesStatus = statusFilter === 'הכל' || order.status === statusFilter;
-    return matchesSearch && matchesStatus;
+    const matchesType = typeFilter === 'הכל' || order.orderType === typeFilter;
+    return matchesSearch && matchesStatus && matchesType;
   });
 
   const activeDetailsOrder = orders.find((o) => o.id === activeDetailsOrderId) || null;
@@ -591,66 +884,69 @@ export default function App() {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-lg sm:text-xl font-bold tracking-tight">ניהול הזמנות יבוא קרמיקה</h1>
-                {cloudStatus === 'connected' ? (
-                  <span
-                    title="מסונכרן לענן"
-                    className="inline-flex items-center gap-1 text-[11px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full"
-                  >
-                    <Cloud className="w-3 h-3" /> ענן פעיל
+                <h1 className="text-lg sm:text-xl font-bold tracking-tight">
+                  קרמיסו - ניהול הזמנות יבוא
+                </h1>
+                {isAdmin && (
+                  <span className="inline-flex items-center gap-1 text-[11px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full font-semibold">
+                    <ShieldCheck className="w-3 h-3" /> מנהל מערכת
                   </span>
-                ) : cloudStatus === 'error' ? (
-                  <span
-                    title={cloudErrorMsg}
-                    className="inline-flex items-center gap-1 text-[11px] bg-red-500/20 text-red-300 px-2 py-0.5 rounded-full"
-                  >
-                    <CloudOff className="w-3 h-3" /> שגיאת ענן
-                  </span>
-                ) : null}
+                )}
               </div>
               <div className="flex items-center gap-2 text-xs text-stone-400">
-                <span className="inline-flex items-center gap-1 text-amber-400 font-medium">
-                  <User className="w-3.5 h-3.5" />
-                  מחובר כ: {currentUser}
+                <span className="inline-flex items-center gap-1 text-stone-200 font-medium">
+                  <User className="w-3.5 h-3.5 text-amber-400" />
+                  {currentDisplayName} ({authUser.email})
                 </span>
                 <span>•</span>
                 <button
-                  onClick={handleSwitchUser}
+                  onClick={handleLogout}
                   className="inline-flex items-center gap-1 hover:text-white underline cursor-pointer"
                 >
                   <LogOut className="w-3 h-3" />
-                  החלף שם
+                  התנתק
                 </button>
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleExportBackup}
-              title="הורד קובץ גיבוי למחשב"
-              className="flex items-center gap-1.5 bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-medium px-3 py-2.5 rounded-xl border border-stone-700 transition cursor-pointer"
-            >
-              <Download className="w-4 h-4" />
-              <span className="hidden sm:inline">גיבוי</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => importInputRef.current?.click()}
-              title="שחזר מקובץ גיבוי"
-              className="flex items-center gap-1.5 bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-medium px-3 py-2.5 rounded-xl border border-stone-700 transition cursor-pointer"
-            >
-              <Upload className="w-4 h-4" />
-              <span className="hidden sm:inline">שחזור</span>
-            </button>
-            <input
-              ref={importInputRef}
-              type="file"
-              accept=".json"
-              onChange={handleImportBackup}
-              className="hidden"
-            />
+            {isAdmin && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setIsAdminModalOpen(true)}
+                  className="flex items-center gap-1.5 bg-stone-800 hover:bg-stone-700 text-amber-300 text-xs font-semibold px-3 py-2.5 rounded-xl border border-stone-700 transition cursor-pointer"
+                >
+                  <Users className="w-4 h-4" />
+                  <span>ניהול משתמשים והתראות</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleExportBackup}
+                  title="הורד קובץ גיבוי"
+                  className="flex items-center gap-1 bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-medium px-2.5 py-2.5 rounded-xl border border-stone-700 transition cursor-pointer"
+                >
+                  <Download className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => importInputRef.current?.click()}
+                  title="שחזר מקובץ גיבוי"
+                  className="flex items-center gap-1 bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-medium px-2.5 py-2.5 rounded-xl border border-stone-700 transition cursor-pointer"
+                >
+                  <Upload className="w-4 h-4" />
+                </button>
+                <input
+                  ref={importInputRef}
+                  type="file"
+                  accept=".json"
+                  onChange={handleImportBackup}
+                  className="hidden"
+                />
+              </>
+            )}
 
             <button
               onClick={openNewModal}
@@ -663,38 +959,46 @@ export default function App() {
         </div>
       </header>
 
-      {/* Cloud Alert Banner if Firestore rules block writes */}
-      {cloudStatus === 'error' && (
-        <div className="max-w-6xl mx-auto px-4 mt-4">
-          <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-2xl text-sm flex items-center justify-between gap-3">
-            <div>
-              <strong>שים לב:</strong> {cloudErrorMsg}. הנתונים נשמרים כרגע במכשיר זה בלבד.
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Main Content */}
       <main className="max-w-6xl mx-auto px-4 mt-6">
         {/* Search & Filter Bar */}
-        <div className="bg-white p-4 rounded-2xl shadow-sm border border-stone-200 flex flex-col md:flex-row gap-3 mb-6">
-          <div className="relative flex-1">
-            <Search className="w-5 h-5 text-stone-400 absolute right-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              placeholder="חיפוש לפי שם לקוח, דגם, טלפון או ספק..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pr-10 pl-4 py-2.5 bg-stone-50 border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500"
-            />
+        <div className="bg-white p-4 rounded-2xl shadow-sm border border-stone-200 space-y-3 mb-6">
+          <div className="flex flex-col md:flex-row gap-3">
+            <div className="relative flex-1">
+              <Search className="w-5 h-5 text-stone-400 absolute right-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="חיפוש לפי שם לקוח, מספר הזמנה, דגם או ספק..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pr-10 pl-4 py-2.5 bg-stone-50 border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500"
+              />
+            </div>
+
+            {/* Type Filter: הכל / B2B / מלאי */}
+            <div className="flex gap-1.5 bg-stone-100 p-1 rounded-xl">
+              {['הכל', 'B2B', 'מלאי'].map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTypeFilter(t)}
+                  className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                    typeFilter === t
+                      ? 'bg-amber-500 text-stone-950 shadow-2xs'
+                      : 'text-stone-600 hover:text-stone-900'
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
           </div>
 
-          <div className="flex gap-2 overflow-x-auto pb-1 md:pb-0">
+          <div className="flex gap-2 overflow-x-auto pb-1">
             {['הכל', ...STATUS_OPTIONS].map((status) => (
               <button
                 key={status}
                 onClick={() => setStatusFilter(status)}
-                className={`px-3.5 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition cursor-pointer ${
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition cursor-pointer ${
                   statusFilter === status
                     ? 'bg-stone-900 text-white shadow-sm'
                     : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
@@ -711,7 +1015,7 @@ export default function App() {
           <div className="bg-white rounded-2xl p-12 text-center border border-stone-200 shadow-sm">
             <Package className="w-12 h-12 text-stone-300 mx-auto mb-3" />
             <h3 className="text-lg font-semibold text-stone-700">לא נמצאו הזמנות</h3>
-            <p className="text-stone-500 text-sm mt-1">לחץ על "הזמנה חדשה" כדי להוסיף הזמנה ראשונה למערכת</p>
+            <p className="text-stone-500 text-sm mt-1">לחץ על "הזמנה חדשה" כדי להוסיף הזמנה למערכת</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
@@ -729,25 +1033,48 @@ export default function App() {
                     {/* Card Top Bar */}
                     <div className="p-4 border-b border-stone-100 flex items-start justify-between gap-2">
                       <div>
-                        <span
-                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${style.bg} ${style.text}`}
-                        >
-                          {style.icon}
-                          {order.status}
-                        </span>
-                        <h3 className="text-lg font-bold text-stone-900 mt-2">{order.customerName}</h3>
-                        {order.phone && (
-                          <a
-                            href={`tel:${order.phone}`}
-                            className="inline-flex items-center gap-1 text-xs text-stone-500 hover:text-amber-600 mt-0.5"
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span
+                            className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold border ${
+                              order.orderType === 'B2B'
+                                ? 'bg-indigo-50 border-indigo-200 text-indigo-700'
+                                : 'bg-stone-100 border-stone-300 text-stone-700'
+                            }`}
                           >
-                            <Phone className="w-3.5 h-3.5" />
-                            {order.phone}
-                          </a>
+                            {order.orderType === 'B2B' ? (
+                              <Building2 className="w-3.5 h-3.5" />
+                            ) : (
+                              <Layers className="w-3.5 h-3.5" />
+                            )}
+                            {order.orderType}
+                          </span>
+
+                          <span
+                            className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold border ${style.bg} ${style.text}`}
+                          >
+                            {style.icon}
+                            {order.status}
+                          </span>
+                        </div>
+
+                        {order.orderType === 'B2B' ? (
+                          <div className="mt-2.5">
+                            <h3 className="text-lg font-bold text-stone-900">
+                              {order.customerName}
+                            </h3>
+                            <span className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md mt-0.5">
+                              <Hash className="w-3 h-3" />
+                              הזמנה: {order.orderNumber}
+                            </span>
+                          </div>
+                        ) : (
+                          <h3 className="text-lg font-bold text-stone-900 mt-2.5">
+                            הזמנת מלאי
+                          </h3>
                         )}
                       </div>
 
-                      {/* Edit & Delete Buttons */}
+                      {/* Edit (All) & Delete (Admin Only) */}
                       <div className="flex items-center gap-1">
                         <button
                           onClick={() => openEditModal(order)}
@@ -756,13 +1083,15 @@ export default function App() {
                         >
                           <Edit3 className="w-4 h-4" />
                         </button>
-                        <button
-                          onClick={() => handleDelete(order)}
-                          title="מחק הזמנה"
-                          className="p-2 text-stone-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition cursor-pointer"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        {isAdmin && (
+                          <button
+                            onClick={() => handleDelete(order)}
+                            title="מחק הזמנה (מנהל בלבד)"
+                            className="p-2 text-stone-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
                       </div>
                     </div>
 
@@ -857,8 +1186,8 @@ export default function App() {
                       </button>
                     </div>
 
-                    {/* Quick Confirm "התקבל" Button */}
-                    {order.status !== 'נמסר ללקוח' && (
+                    {/* Quick Confirm "התקבל" Button (Admin Only) */}
+                    {isAdmin && order.status !== 'נמסר ללקוח' && (
                       <div className="px-4 pb-4">
                         <button
                           type="button"
@@ -866,7 +1195,7 @@ export default function App() {
                           className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-sm rounded-xl shadow-xs transition cursor-pointer"
                         >
                           <Check className="w-4 h-4" />
-                          <span>התקבל</span>
+                          <span>התקבל (אישור אספקה)</span>
                         </button>
                       </div>
                     )}
@@ -895,33 +1224,76 @@ export default function App() {
             </div>
 
             <form onSubmit={handleSave} className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-stone-600 mb-1">שם לקוח *</label>
-                  <input
-                    type="text"
-                    required
-                    value={formData.customerName}
-                    onChange={(e) => setFormData({ ...formData, customerName: e.target.value })}
-                    className="w-full px-3 py-2 border border-stone-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:outline-none"
-                    placeholder="ישראל ישראלי"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-stone-600 mb-1">טלפון</label>
-                  <input
-                    type="tel"
-                    value={formData.phone}
-                    onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                    className="w-full px-3 py-2 border border-stone-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:outline-none"
-                    placeholder="050-0000000"
-                  />
+              {/* Mandatory Order Type Selector: B2B vs מלאי */}
+              <div>
+                <label className="block text-xs font-semibold text-stone-600 mb-1.5">
+                  סוג הזמנה (חובה לבחור) *
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setFormData({ ...formData, orderType: 'B2B' })}
+                    className={`py-2.5 px-4 rounded-xl border-2 font-bold text-sm flex items-center justify-center gap-2 transition cursor-pointer ${
+                      formData.orderType === 'B2B'
+                        ? 'border-indigo-600 bg-indigo-50 text-indigo-800'
+                        : 'border-stone-200 bg-stone-50 text-stone-600 hover:bg-stone-100'
+                    }`}
+                  >
+                    <Building2 className="w-4 h-4" />
+                    <span>B2B (לקוח)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFormData({ ...formData, orderType: 'מלאי' })}
+                    className={`py-2.5 px-4 rounded-xl border-2 font-bold text-sm flex items-center justify-center gap-2 transition cursor-pointer ${
+                      formData.orderType === 'מלאי'
+                        ? 'border-amber-500 bg-amber-50 text-amber-900'
+                        : 'border-stone-200 bg-stone-50 text-stone-600 hover:bg-stone-100'
+                    }`}
+                  >
+                    <Layers className="w-4 h-4" />
+                    <span>מלאי</span>
+                  </button>
                 </div>
               </div>
 
+              {/* Conditional Mandatory Fields for B2B */}
+              {formData.orderType === 'B2B' && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-indigo-50/60 p-3.5 rounded-xl border border-indigo-100">
+                  <div>
+                    <label className="block text-xs font-semibold text-indigo-900 mb-1">
+                      שם לקוח *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={formData.customerName}
+                      onChange={(e) => setFormData({ ...formData, customerName: e.target.value })}
+                      className="w-full px-3 py-2 bg-white border border-indigo-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                      placeholder="שם הלקוח / הפרויקט"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-indigo-900 mb-1">
+                      מספר הזמנה *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={formData.orderNumber}
+                      onChange={(e) => setFormData({ ...formData, orderNumber: e.target.value })}
+                      className="w-full px-3 py-2 bg-white border border-indigo-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                      placeholder="לדוגמה: 10452"
+                    />
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-semibold text-stone-600 mb-1">דגם / מק״ט קרמיקה *</label>
+                  <label className="block text-xs font-semibold text-stone-600 mb-1">
+                    דגם / מק״ט קרמיקה *
+                  </label>
                   <input
                     type="text"
                     required
@@ -953,7 +1325,7 @@ export default function App() {
                     }
                     className="w-full px-3 py-2 border border-stone-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white"
                   >
-                    {STATUS_OPTIONS.map((st) => (
+                    {STATUS_OPTIONS.filter((st) => isAdmin || st !== 'נמסר ללקוח').map((st) => (
                       <option key={st} value={st}>
                         {st}
                       </option>
@@ -1014,7 +1386,10 @@ export default function App() {
                 {formData.images.length > 0 && (
                   <div className="grid grid-cols-4 gap-2 mt-3">
                     {formData.images.map((img, idx) => (
-                      <div key={idx} className="relative aspect-square rounded-lg overflow-hidden border border-stone-200">
+                      <div
+                        key={idx}
+                        className="relative aspect-square rounded-lg overflow-hidden border border-stone-200"
+                      >
                         <img src={img} alt="" className="w-full h-full object-cover" />
                         <button
                           type="button"
@@ -1042,10 +1417,205 @@ export default function App() {
                   disabled={saving}
                   className="px-5 py-2 rounded-xl text-sm font-bold bg-amber-500 hover:bg-amber-400 text-stone-950 shadow disabled:opacity-50 cursor-pointer"
                 >
-                  {saving ? 'שומר...' : editingOrder ? 'שמור שינויים' : 'צור הזמנה'}
+                  {saving ? 'שומר...' : editingOrder ? 'שמור שינויים' : 'צור הזמנה ושלח מייל'}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Admin Panel Modal: User Management & Email Notification Settings */}
+      {isAdmin && isAdminModalOpen && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-40 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl max-w-2xl w-full shadow-2xl overflow-hidden my-8">
+            <div className="bg-stone-900 text-white px-6 py-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-amber-400" />
+                <h2 className="text-lg font-bold">ניהול משתמשים והגדרות מנהל</h2>
+              </div>
+              <button
+                onClick={() => setIsAdminModalOpen(false)}
+                className="text-stone-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-6 max-h-[82vh] overflow-y-auto">
+              {/* Section 1: Notification Email on New Order */}
+              <div className="bg-amber-50/70 border border-amber-200 rounded-2xl p-4">
+                <h3 className="text-sm font-bold text-stone-900 flex items-center gap-2 mb-2">
+                  <Mail className="w-4 h-4 text-amber-600" />
+                  אימייל לקבלת התראה בעת הוספת הזמנה חדשה
+                </h3>
+                <form onSubmit={handleSaveNotificationEmail} className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="email"
+                    required
+                    dir="ltr"
+                    value={adminEmailInput}
+                    onChange={(e) => setAdminEmailInput(e.target.value)}
+                    placeholder="izak@ceramiso.co.il"
+                    className="flex-1 px-3.5 py-2 bg-white border border-amber-300 rounded-xl text-sm text-left focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={savingSettings}
+                    className="px-4 py-2 bg-stone-900 hover:bg-stone-800 text-white text-xs font-bold rounded-xl transition cursor-pointer"
+                  >
+                    {savingSettings ? 'שומר...' : 'שמור אימייל'}
+                  </button>
+                </form>
+              </div>
+
+              {/* Section 2: Add New Employee User */}
+              <div className="border border-stone-200 rounded-2xl p-4">
+                <h3 className="text-sm font-bold text-stone-900 flex items-center gap-2 mb-3">
+                  <UserPlus className="w-4 h-4 text-emerald-600" />
+                  הוספת משתמש חדש למערכת
+                </h3>
+                <form onSubmit={handleCreateUser} className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <input
+                    type="text"
+                    required
+                    value={newUserName}
+                    onChange={(e) => setNewUserName(e.target.value)}
+                    placeholder="שם העובד (ללוג)"
+                    className="px-3 py-2 border border-stone-300 rounded-xl text-sm focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  />
+                  <input
+                    type="email"
+                    required
+                    dir="ltr"
+                    value={newUserEmail}
+                    onChange={(e) => setNewUserEmail(e.target.value)}
+                    placeholder="user@ceramiso.co.il"
+                    className="px-3 py-2 border border-stone-300 rounded-xl text-sm text-left focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  />
+                  <input
+                    type="text"
+                    required
+                    dir="ltr"
+                    minLength={6}
+                    value={newUserPassword}
+                    onChange={(e) => setNewUserPassword(e.target.value)}
+                    placeholder="סיסמה (מינ׳ 6 תווים)"
+                    className="px-3 py-2 border border-stone-300 rounded-xl text-sm text-left focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  />
+                  <button
+                    type="submit"
+                    disabled={creatingUser}
+                    className="sm:col-span-3 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-xl shadow-xs transition disabled:opacity-50 cursor-pointer"
+                  >
+                    {creatingUser ? 'יוצר משתמש...' : 'צור משתמש חדש'}
+                  </button>
+                </form>
+              </div>
+
+              {/* Section 3: Existing Users List */}
+              <div>
+                <h3 className="text-sm font-bold text-stone-900 mb-2.5">
+                  משתמשים רשומים ({appUsers.length})
+                </h3>
+                {appUsers.length === 0 ? (
+                  <p className="text-xs text-stone-500 bg-stone-50 p-4 rounded-xl text-center">
+                    טרם נוספו עובדים נוספים מעבר למנהל המערכת ({ADMIN_EMAIL}).
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {appUsers.map((u) => (
+                      <div
+                        key={u.id}
+                        className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-2 ${
+                          u.active
+                            ? 'bg-white border-stone-200'
+                            : 'bg-red-50/50 border-red-200 opacity-75'
+                        }`}
+                      >
+                        <div>
+                          {editingUserId === u.id ? (
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="text"
+                                value={editUserNameValue}
+                                onChange={(e) => setEditUserNameValue(e.target.value)}
+                                className="px-2 py-1 border border-stone-300 rounded-lg text-xs"
+                              />
+                              <button
+                                onClick={() => handleUpdateUserName(u.id)}
+                                className="px-2 py-1 bg-emerald-600 text-white text-xs rounded-lg cursor-pointer"
+                              >
+                                שמור
+                              </button>
+                              <button
+                                onClick={() => setEditingUserId(null)}
+                                className="px-2 py-1 bg-stone-200 text-xs rounded-lg cursor-pointer"
+                              >
+                                ביטול
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-sm text-stone-900">{u.name}</span>
+                              {!u.active && (
+                                <span className="text-[10px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold">
+                                  מושבת
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          <p className="text-xs text-stone-500" dir="ltr">
+                            {u.email}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingUserId(u.id);
+                              setEditUserNameValue(u.name);
+                            }}
+                            title="ערוך שם"
+                            className="p-1.5 text-stone-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg cursor-pointer"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleResetUserPassword(u.email)}
+                            title="שלח מייל איפוס סיסמה"
+                            className="p-1.5 text-stone-500 hover:text-amber-600 hover:bg-amber-50 rounded-lg cursor-pointer"
+                          >
+                            <KeyRound className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleUserActive(u)}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-semibold cursor-pointer ${
+                              u.active
+                                ? 'bg-stone-100 text-stone-700 hover:bg-stone-200'
+                                : 'bg-emerald-100 text-emerald-800'
+                            }`}
+                          >
+                            {u.active ? 'השבת' : 'הפעל'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteUserRecord(u)}
+                            title="מחק משתמש"
+                            className="p-1.5 text-stone-500 hover:text-red-600 hover:bg-red-50 rounded-lg cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1056,7 +1626,11 @@ export default function App() {
           <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
             <div className="bg-stone-900 text-white px-5 py-4 flex items-center justify-between">
               <div>
-                <h2 className="text-base font-bold">{activeDetailsOrder.customerName}</h2>
+                <h2 className="text-base font-bold">
+                  {activeDetailsOrder.orderType === 'B2B'
+                    ? `${activeDetailsOrder.customerName} (#${activeDetailsOrder.orderNumber})`
+                    : `הזמנת מלאי - ${activeDetailsOrder.modelName}`}
+                </h2>
                 <p className="text-xs text-stone-400">{activeDetailsOrder.modelName}</p>
               </div>
               <button
@@ -1103,7 +1677,7 @@ export default function App() {
                     </div>
                   ) : (
                     activeDetailsOrder.messages.map((msg, idx) => {
-                      const isMe = msg.user === currentUser;
+                      const isMe = msg.user === currentDisplayName;
                       return (
                         <div
                           key={idx}
@@ -1138,7 +1712,7 @@ export default function App() {
                     type="text"
                     value={newMessageText}
                     onChange={(e) => setNewMessageText(e.target.value)}
-                    placeholder={`כתוב הודעה בשם ${currentUser}...`}
+                    placeholder={`כתוב הודעה בשם ${currentDisplayName}...`}
                     className="flex-1 px-3.5 py-2.5 bg-stone-100 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
                   />
                   <button
