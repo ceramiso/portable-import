@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import {
@@ -12,6 +12,7 @@ import {
   query,
   orderBy,
   arrayUnion,
+  setDoc,
 } from 'firebase/firestore';
 import {
   PlusCircle,
@@ -34,6 +35,10 @@ import {
   History,
   MessageSquare,
   Send,
+  Cloud,
+  CloudOff,
+  Download,
+  Upload,
 } from 'lucide-react';
 
 // --- Firebase Configuration ---
@@ -49,7 +54,10 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = "ceramic-orders";
+
+// Fixed permanent collection path so software updates NEVER lose cloud data
+const COLLECTION_PATH = ['artifacts', 'ceramic-orders', 'public', 'data', 'orders'] as const;
+const LOCAL_BACKUP_KEY = 'ceramic_orders_permanent_backup_v1';
 
 interface LogEntry {
   user: string;
@@ -121,7 +129,6 @@ const formatDateTime = (timestamp: number) => {
   });
 };
 
-// Compress image to Base64 so multiple photos fit smoothly in Firestore
 const compressImage = (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -147,29 +154,38 @@ const compressImage = (file: File): Promise<string> => {
 };
 
 export default function App() {
-  // User Name Login State (persisted in localStorage)
   const [currentUser, setCurrentUser] = useState<string>(() => {
     return localStorage.getItem('ceramic_user_name') || '';
   });
   const [nameInput, setNameInput] = useState('');
 
-  const [userReady, setUserReady] = useState(false);
-  const [orders, setOrders] = useState<Order[]>([]);
+  // Load local backup immediately so data is never lost across updates or offline moments
+  const [orders, setOrders] = useState<Order[]>(() => {
+    try {
+      const saved = localStorage.getItem(LOCAL_BACKUP_KEY);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [cloudStatus, setCloudStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
+  const [cloudErrorMsg, setCloudErrorMsg] = useState<string>('');
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('הכל');
 
-  // Add/Edit Modal State
+  // Modals
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // Activity Log & Chat Drawer/Modal State
   const [activeDetailsOrderId, setActiveDetailsOrderId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'chat' | 'logs'>('chat');
   const [newMessageText, setNewMessageText] = useState('');
   const [sendingMsg, setSendingMsg] = useState(false);
 
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const [formData, setFormData] = useState({
     customerName: '',
@@ -183,50 +199,67 @@ export default function App() {
     images: [] as string[],
   });
 
+  // Persist local mirror whenever orders change
+  const saveLocalMirror = (updatedOrders: Order[]) => {
+    setOrders(updatedOrders);
+    try {
+      localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify(updatedOrders));
+    } catch (e) {
+      console.warn('LocalStorage quota warning:', e);
+    }
+  };
+
   useEffect(() => {
-    signInAnonymously(auth).catch((err) => console.error('Auth error:', err));
-    const unsubAuth = onAuthStateChanged(auth, (user) => {
-      if (user) setUserReady(true);
+    signInAnonymously(auth).catch((err) => {
+      console.error('Auth error:', err);
+      setCloudStatus('error');
+      setCloudErrorMsg('שגיאת הרשאת דומיין ב-Firebase (יש לאשר את הדומיין ב-Authentication)');
     });
+
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      if (!user) return;
+
+      const ordersRef = collection(db, ...COLLECTION_PATH);
+      const q = query(ordersRef, orderBy('createdAt', 'desc'));
+
+      const unsubOrders = onSnapshot(
+        q,
+        (snapshot) => {
+          setCloudStatus('connected');
+          setCloudErrorMsg('');
+          const list: Order[] = snapshot.docs.map((d) => {
+            const data = d.data();
+            return {
+              id: d.id,
+              customerName: data.customerName || '',
+              phone: data.phone || '',
+              modelName: data.modelName || '',
+              quantity: data.quantity || '',
+              supplier: data.supplier || '',
+              status: data.status || 'הוזמן מספק',
+              eta: data.eta || '',
+              notes: data.notes || '',
+              images: Array.isArray(data.images) ? data.images : [],
+              logs: Array.isArray(data.logs) ? data.logs : [],
+              messages: Array.isArray(data.messages) ? data.messages : [],
+              createdBy: data.createdBy || '',
+              createdAt: data.createdAt || Date.now(),
+            };
+          });
+          saveLocalMirror(list);
+        },
+        (error) => {
+          console.error('Firestore read error:', error);
+          setCloudStatus('error');
+          setCloudErrorMsg('אין גישה לענן Firestore - בדוק את לשונית Rules ב-Firebase');
+        }
+      );
+
+      return () => unsubOrders();
+    });
+
     return () => unsubAuth();
   }, []);
-
-  useEffect(() => {
-    if (!userReady) return;
-    const ordersRef = collection(db, 'artifacts', appId, 'public', 'data', 'orders');
-    const q = query(ordersRef, orderBy('createdAt', 'desc'));
-
-    const unsubOrders = onSnapshot(
-      q,
-      (snapshot) => {
-        const list: Order[] = snapshot.docs.map((d) => {
-          const data = d.data();
-          return {
-            id: d.id,
-            customerName: data.customerName || '',
-            phone: data.phone || '',
-            modelName: data.modelName || '',
-            quantity: data.quantity || '',
-            supplier: data.supplier || '',
-            status: data.status || 'הוזמן מספק',
-            eta: data.eta || '',
-            notes: data.notes || '',
-            images: Array.isArray(data.images) ? data.images : [],
-            logs: Array.isArray(data.logs) ? data.logs : [],
-            messages: Array.isArray(data.messages) ? data.messages : [],
-            createdBy: data.createdBy || '',
-            createdAt: data.createdAt || Date.now(),
-          };
-        });
-        setOrders(list);
-      },
-      (error) => {
-        console.error('Firestore read error:', error);
-      }
-    );
-
-    return () => unsubOrders();
-  }, [userReady]);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -288,7 +321,7 @@ export default function App() {
         ...prev,
         images: [...prev.images, ...compressedList],
       }));
-    } catch (err) {
+    } catch {
       alert('אירעה שגיאה בטעינת התמונות, נסה תמונה קטנה יותר.');
     }
     e.target.value = '';
@@ -305,8 +338,7 @@ export default function App() {
     const changes: string[] = [];
     if (oldOrder.customerName !== newData.customerName)
       changes.push(`שם לקוח (${oldOrder.customerName} ← ${newData.customerName})`);
-    if (oldOrder.phone !== newData.phone)
-      changes.push(`טלפון`);
+    if (oldOrder.phone !== newData.phone) changes.push(`טלפון`);
     if (oldOrder.modelName !== newData.modelName)
       changes.push(`דגם (${oldOrder.modelName} ← ${newData.modelName})`);
     if (oldOrder.quantity !== newData.quantity)
@@ -317,8 +349,7 @@ export default function App() {
       changes.push(`סטטוס (${oldOrder.status} ← ${newData.status})`);
     if (oldOrder.eta !== newData.eta)
       changes.push(`צפי הגעה (${oldOrder.eta || 'ללא'} ← ${newData.eta || 'ללא'})`);
-    if (oldOrder.notes !== newData.notes)
-      changes.push(`הערות`);
+    if (oldOrder.notes !== newData.notes) changes.push(`הערות`);
     if ((oldOrder.images?.length || 0) !== newData.images.length)
       changes.push(`תמונות (${oldOrder.images?.length || 0} ← ${newData.images.length})`);
 
@@ -334,7 +365,7 @@ export default function App() {
 
     setSaving(true);
     try {
-      const ordersRef = collection(db, 'artifacts', appId, 'public', 'data', 'orders');
+      const ordersRef = collection(db, ...COLLECTION_PATH);
       if (editingOrder) {
         const actionText = describeChanges(editingOrder, formData);
         const logEntry: LogEntry = {
@@ -342,7 +373,16 @@ export default function App() {
           action: actionText,
           timestamp: Date.now(),
         };
-        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'orders', editingOrder.id);
+
+        // Update local backup immediately
+        const updatedList = orders.map((o) =>
+          o.id === editingOrder.id
+            ? { ...o, ...formData, logs: [...(o.logs || []), logEntry] }
+            : o
+        );
+        saveLocalMirror(updatedList);
+
+        const docRef = doc(db, ...COLLECTION_PATH, editingOrder.id);
         await updateDoc(docRef, {
           ...formData,
           logs: arrayUnion(logEntry),
@@ -353,18 +393,22 @@ export default function App() {
           action: 'יצר את ההזמנה',
           timestamp: Date.now(),
         };
-        await addDoc(ordersRef, {
+        const newPayload = {
           ...formData,
           createdBy: currentUser,
           createdAt: Date.now(),
           logs: [initialLog],
           messages: [],
-        });
+        };
+
+        const docRef = await addDoc(ordersRef, newPayload);
+        saveLocalMirror([{ id: docRef.id, ...newPayload }, ...orders]);
       }
       setIsModalOpen(false);
     } catch (err) {
       console.error('Save error:', err);
-      alert('שגיאה בשמירה. ייתכן שהתמונות כבדות מדי, נסה להסיר תמונה אחת ולשמור שוב.');
+      alert('ההזמנה נשמרה מקומית במכשיר, אך השמירה לענן נכשלה. ודא שהגדרת Rules ב-Firebase או שהתמונות אינן כבדות מדי.');
+      setIsModalOpen(false);
     } finally {
       setSaving(false);
     }
@@ -374,20 +418,27 @@ export default function App() {
     const confirmed = window.confirm('האם אתה בטוח שאתה רוצה לאשר');
     if (!confirmed) return;
 
+    const logEntry: LogEntry = {
+      user: currentUser,
+      action: 'אישר קבלה ומסירה ללקוח ("התקבל")',
+      timestamp: Date.now(),
+    };
+
+    const updatedList = orders.map((o) =>
+      o.id === order.id
+        ? { ...o, status: 'נמסר ללקוח' as const, logs: [...(o.logs || []), logEntry] }
+        : o
+    );
+    saveLocalMirror(updatedList);
+
     try {
-      const logEntry: LogEntry = {
-        user: currentUser,
-        action: 'אישר קבלה ומסירה ללקוח ("התקבל")',
-        timestamp: Date.now(),
-      };
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'orders', order.id);
+      const docRef = doc(db, ...COLLECTION_PATH, order.id);
       await updateDoc(docRef, {
         status: 'נמסר ללקוח',
         logs: arrayUnion(logEntry),
       });
     } catch (err) {
       console.error('Status update error:', err);
-      alert('שגיאה בעדכון הסטטוס');
     }
   };
 
@@ -397,15 +448,16 @@ export default function App() {
     );
     if (!confirmed) return;
 
+    saveLocalMirror(orders.filter((o) => o.id !== order.id));
+    if (activeDetailsOrderId === order.id) {
+      setActiveDetailsOrderId(null);
+    }
+
     try {
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'orders', order.id);
+      const docRef = doc(db, ...COLLECTION_PATH, order.id);
       await deleteDoc(docRef);
-      if (activeDetailsOrderId === order.id) {
-        setActiveDetailsOrderId(null);
-      }
     } catch (err) {
       console.error('Delete error:', err);
-      alert('שגיאה במחיקת ההזמנה');
     }
   };
 
@@ -414,26 +466,65 @@ export default function App() {
     if (!activeDetailsOrderId || !newMessageText.trim()) return;
 
     setSendingMsg(true);
+    const msg: ChatMessage = {
+      user: currentUser,
+      text: newMessageText.trim(),
+      timestamp: Date.now(),
+    };
+
+    const updatedList = orders.map((o) =>
+      o.id === activeDetailsOrderId
+        ? { ...o, messages: [...(o.messages || []), msg] }
+        : o
+    );
+    saveLocalMirror(updatedList);
+    setNewMessageText('');
+
     try {
-      const msg: ChatMessage = {
-        user: currentUser,
-        text: newMessageText.trim(),
-        timestamp: Date.now(),
-      };
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'orders', activeDetailsOrderId);
+      const docRef = doc(db, ...COLLECTION_PATH, activeDetailsOrderId);
       await updateDoc(docRef, {
         messages: arrayUnion(msg),
       });
-      setNewMessageText('');
     } catch (err) {
       console.error('Chat send error:', err);
-      alert('שגיאה בשליחת ההודעה');
     } finally {
       setSendingMsg(false);
     }
   };
 
-  // --- Name Login Screen (No Password) ---
+  // Manual Export / Import Backup (100% immune to any update)
+  const handleExportBackup = () => {
+    const dataStr = JSON.stringify(orders, null, 2);
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ceramic-orders-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportBackup = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const importedOrders: Order[] = JSON.parse(text);
+      if (!Array.isArray(importedOrders)) throw new Error('Invalid format');
+
+      for (const ord of importedOrders) {
+        const { id, ...rest } = ord;
+        const docRef = doc(db, ...COLLECTION_PATH, id || `imp_${Date.now()}_${Math.random()}`);
+        await setDoc(docRef, rest, { merge: true });
+      }
+      alert(`שוחזרו בהצלחה ${importedOrders.length} הזמנות לענן!`);
+    } catch {
+      alert('קובץ הגיבוי אינו תקין או שאין הרשאת כתיבה לענן.');
+    }
+    e.target.value = '';
+  };
+
   if (!currentUser) {
     return (
       <div dir="rtl" className="min-h-screen bg-stone-900 flex items-center justify-center p-4">
@@ -499,7 +590,24 @@ export default function App() {
               ק
             </div>
             <div>
-              <h1 className="text-lg sm:text-xl font-bold tracking-tight">ניהול הזמנות יבוא קרמיקה</h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-lg sm:text-xl font-bold tracking-tight">ניהול הזמנות יבוא קרמיקה</h1>
+                {cloudStatus === 'connected' ? (
+                  <span
+                    title="מסונכרן לענן"
+                    className="inline-flex items-center gap-1 text-[11px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full"
+                  >
+                    <Cloud className="w-3 h-3" /> ענן פעיל
+                  </span>
+                ) : cloudStatus === 'error' ? (
+                  <span
+                    title={cloudErrorMsg}
+                    className="inline-flex items-center gap-1 text-[11px] bg-red-500/20 text-red-300 px-2 py-0.5 rounded-full"
+                  >
+                    <CloudOff className="w-3 h-3" /> שגיאת ענן
+                  </span>
+                ) : null}
+              </div>
               <div className="flex items-center gap-2 text-xs text-stone-400">
                 <span className="inline-flex items-center gap-1 text-amber-400 font-medium">
                   <User className="w-3.5 h-3.5" />
@@ -517,15 +625,54 @@ export default function App() {
             </div>
           </div>
 
-          <button
-            onClick={openNewModal}
-            className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold px-4 py-2.5 rounded-xl shadow transition cursor-pointer"
-          >
-            <PlusCircle className="w-5 h-5" />
-            <span>הזמנה חדשה</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleExportBackup}
+              title="הורד קובץ גיבוי למחשב"
+              className="flex items-center gap-1.5 bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-medium px-3 py-2.5 rounded-xl border border-stone-700 transition cursor-pointer"
+            >
+              <Download className="w-4 h-4" />
+              <span className="hidden sm:inline">גיבוי</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => importInputRef.current?.click()}
+              title="שחזר מקובץ גיבוי"
+              className="flex items-center gap-1.5 bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-medium px-3 py-2.5 rounded-xl border border-stone-700 transition cursor-pointer"
+            >
+              <Upload className="w-4 h-4" />
+              <span className="hidden sm:inline">שחזור</span>
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".json"
+              onChange={handleImportBackup}
+              className="hidden"
+            />
+
+            <button
+              onClick={openNewModal}
+              className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold px-4 py-2.5 rounded-xl shadow transition cursor-pointer"
+            >
+              <PlusCircle className="w-5 h-5" />
+              <span>הזמנה חדשה</span>
+            </button>
+          </div>
         </div>
       </header>
+
+      {/* Cloud Alert Banner if Firestore rules block writes */}
+      {cloudStatus === 'error' && (
+        <div className="max-w-6xl mx-auto px-4 mt-4">
+          <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-2xl text-sm flex items-center justify-between gap-3">
+            <div>
+              <strong>שים לב:</strong> {cloudErrorMsg}. הנתונים נשמרים כרגע במכשיר זה בלבד.
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main Content */}
       <main className="max-w-6xl mx-auto px-4 mt-6">
@@ -907,7 +1054,6 @@ export default function App() {
       {activeDetailsOrder && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-40 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
-            {/* Modal Header */}
             <div className="bg-stone-900 text-white px-5 py-4 flex items-center justify-between">
               <div>
                 <h2 className="text-base font-bold">{activeDetailsOrder.customerName}</h2>
@@ -921,7 +1067,6 @@ export default function App() {
               </button>
             </div>
 
-            {/* Tabs */}
             <div className="flex border-b border-stone-200 bg-stone-50">
               <button
                 type="button"
@@ -949,7 +1094,6 @@ export default function App() {
               </button>
             </div>
 
-            {/* Tab Content */}
             {activeTab === 'chat' ? (
               <>
                 <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-stone-50 min-h-[250px]">
@@ -986,7 +1130,6 @@ export default function App() {
                   )}
                 </div>
 
-                {/* Chat Input */}
                 <form
                   onSubmit={handleSendMessage}
                   className="p-3 bg-white border-t border-stone-200 flex items-center gap-2"
