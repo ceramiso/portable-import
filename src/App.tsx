@@ -105,6 +105,8 @@ interface Order {
   customerName: string;
   orderNumber: string;
   modelName: string;
+  tileSize?: string;
+  finish?: string;
   quantity: string;
   supplier: string;
   isOrdered: boolean;
@@ -223,6 +225,8 @@ export default function App() {
     customerName: '',
     orderNumber: '',
     modelName: '',
+    tileSize: '',
+    finish: '',
     quantity: '',
     supplier: '',
     isOrdered: false,
@@ -269,6 +273,8 @@ export default function App() {
           customerName: data.customerName || '',
           orderNumber: data.orderNumber || '',
           modelName: data.modelName || '',
+          tileSize: data.tileSize || '',
+          finish: data.finish || '',
           quantity: data.quantity || '',
           supplier: data.supplier || '',
           isOrdered: typeof data.isOrdered === 'boolean' ? data.isOrdered : legacyOrdered,
@@ -390,6 +396,8 @@ export default function App() {
     customerName: string;
     orderNumber: string;
     modelName: string;
+    tileSize?: string;
+    finish?: string;
     quantity: string;
     supplier: string;
     isOrdered: boolean;
@@ -415,6 +423,8 @@ export default function App() {
       `סוג הזמנה: ${data.orderType}`,
       ...(data.orderType === 'B2B' ? [`שם לקוח: ${data.customerName}`, `מספר הזמנה: ${data.orderNumber}`] : []),
       `דגם / מק"ט: ${data.modelName}`,
+      `מידת אריח: ${data.tileSize || '-'}`,
+      `גימור: ${data.finish || '-'}`,
       `כמות / מ"ר: ${data.quantity || '-'}`,
       `ספק / מפעל: ${data.supplier || '-'}`,
       `סטטוס הזמנה: ${data.isOrdered ? 'הוזמן מהספק' : 'טרם הוזמן'}`,
@@ -537,6 +547,8 @@ export default function App() {
       customerName: '',
       orderNumber: '',
       modelName: '',
+      tileSize: '',
+      finish: '',
       quantity: '',
       supplier: '',
       isOrdered: false,
@@ -554,6 +566,8 @@ export default function App() {
       customerName: order.customerName,
       orderNumber: order.orderNumber || '',
       modelName: order.modelName,
+      tileSize: order.tileSize || '',
+      finish: order.finish || '',
       quantity: order.quantity,
       supplier: order.supplier,
       isOrdered: Boolean(order.isOrdered),
@@ -590,6 +604,8 @@ export default function App() {
     if (oldOrder.customerName !== newData.customerName) changes.push('שם לקוח');
     if (oldOrder.orderNumber !== newData.orderNumber) changes.push('מספר הזמנה');
     if (oldOrder.modelName !== newData.modelName) changes.push('דגם');
+    if (oldOrder.tileSize !== newData.tileSize) changes.push('מידת אריח');
+    if (oldOrder.finish !== newData.finish) changes.push('גימור');
     if (oldOrder.quantity !== newData.quantity) changes.push('כמות');
     if (oldOrder.supplier !== newData.supplier) changes.push('ספק');
     if (Boolean(oldOrder.isOrdered) !== Boolean(newData.isOrdered)) changes.push('סטטוס הזמנה');
@@ -615,6 +631,8 @@ export default function App() {
       customerName: formData.orderType === 'B2B' ? formData.customerName.trim() : '',
       orderNumber: formData.orderType === 'B2B' ? formData.orderNumber.trim() : '',
       modelName: formData.modelName.trim(),
+      tileSize: formData.tileSize.trim(),
+      finish: formData.finish.trim(),
       quantity: formData.quantity.trim(),
       supplier: formData.supplier.trim(),
       isOrdered: Boolean(formData.isOrdered),
@@ -928,6 +946,8 @@ export default function App() {
                   </div>
                   <div className="px-4 sm:px-5 py-3 border-t border-slate-100 space-y-1.5 sm:space-y-2 text-xs sm:text-sm">
                     <div className="flex justify-between gap-3"><span className="text-slate-400 shrink-0">דגם/מק״ט</span><span className="font-semibold text-slate-900 text-left">{order.modelName}</span></div>
+                    {order.tileSize && <div className="flex justify-between gap-3"><span className="text-slate-400">מידת אריח</span><span className="font-medium text-slate-700">{order.tileSize}</span></div>}
+                    {order.finish && <div className="flex justify-between gap-3"><span className="text-slate-400">גימור</span><span className="font-medium text-slate-700">{order.finish}</span></div>}
                     {order.quantity && <div className="flex justify-between gap-3"><span className="text-slate-400">כמות</span><span className="font-medium text-slate-700">{order.quantity}</span></div>}
                     {order.supplier && <div className="flex justify-between gap-3"><span className="text-slate-400">ספק</span><span className="font-medium text-slate-700">{order.supplier}</span></div>}
                     {order.eta && <div className="flex justify-between gap-3"><span className="text-slate-400 flex items-center gap-1"><Calendar className="w-3 h-3"/> צפי הגעה</span><span className="font-medium text-slate-700">{order.eta}</span></div>}
@@ -986,6 +1006,8 @@ export default function App() {
               )}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div><label className="block text-xs font-semibold mb-1.5">דגם / מק״ט *</label><input type="text" required value={formData.modelName} onChange={e=>setFormData({...formData, modelName:e.target.value})} className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:bg-white" /></div>
+                <div><label className="block text-xs font-semibold mb-1.5">מידת אריח</label><input type="text" value={formData.tileSize} onChange={e=>setFormData({...formData, tileSize:e.target.value})} className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:bg-white" placeholder="לדוגמה: 60x120" /></div>
+                <div><label className="block text-xs font-semibold mb-1.5">גימור</label><input type="text" value={formData.finish} onChange={e=>setFormData({...formData, finish:e.target.value})} className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:bg-white" placeholder="לדוגמה: מט / מבריק" /></div>
                 <div><label className="block text-xs font-semibold mb-1.5">כמות / מ״ר</label><input type="text" value={formData.quantity} onChange={e=>setFormData({...formData, quantity:e.target.value})} className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:bg-white" /></div>
                 <div><label className="block text-xs font-semibold mb-1.5">ספק</label><input type="text" value={formData.supplier} onChange={e=>setFormData({...formData, supplier:e.target.value})} className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:bg-white" /></div>
                 <div><label className="block text-xs font-semibold mb-1.5">צפי הגעה</label><input type="date" value={formData.eta} onChange={e=>setFormData({...formData, eta:e.target.value})} className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:bg-white" /></div>
