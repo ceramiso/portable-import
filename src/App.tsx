@@ -10,7 +10,7 @@ import {
   browserSessionPersistence,
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
-  User as FirebaseUser,
+type User as FirebaseUser,
 } from 'firebase/auth';
 import {
   getFirestore,
