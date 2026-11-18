@@ -40,13 +40,12 @@ import {
   Send,
   ShieldCheck,
   Users,
-  Building2,
   Download,
   Upload,
   KeyRound,
   ShoppingBag,
+  Building2,
   Layers,
-  Hash
 } from 'lucide-react';
 
 // --- Firebase Configuration ---
@@ -105,8 +104,6 @@ interface Order {
   customerName: string;
   orderNumber: string;
   modelName: string;
-  tileSize?: string;
-  finish?: string;
   quantity: string;
   supplier: string;
   isOrdered: boolean;
@@ -195,13 +192,9 @@ export default function App() {
   const [saving, setSaving] = useState(false);
 
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
-  const [adminActiveTab, setAdminActiveTab] = useState<'staff' | 'settings'>('staff');
   const [newStaffUsername, setNewStaffUsername] = useState('');
   const [newStaffPassword, setNewStaffPassword] = useState('');
   const [creatingStaff, setCreatingStaff] = useState(false);
-  const [editingStaffId, setEditingStaffId] = useState<string | null>(null);
-  const [editStaffUsername, setEditStaffUsername] = useState('');
-  const [editStaffPassword, setEditStaffPassword] = useState('');
 
   const [settingsForm, setSettingsForm] = useState<EmailSettings>({
     notificationEmail: DEFAULT_NOTIFICATION_EMAIL,
@@ -225,8 +218,6 @@ export default function App() {
     customerName: '',
     orderNumber: '',
     modelName: '',
-    tileSize: '',
-    finish: '',
     quantity: '',
     supplier: '',
     isOrdered: false,
@@ -273,8 +264,6 @@ export default function App() {
           customerName: data.customerName || '',
           orderNumber: data.orderNumber || '',
           modelName: data.modelName || '',
-          tileSize: data.tileSize || '',
-          finish: data.finish || '',
           quantity: data.quantity || '',
           supplier: data.supplier || '',
           isOrdered: typeof data.isOrdered === 'boolean' ? data.isOrdered : legacyOrdered,
@@ -331,6 +320,17 @@ export default function App() {
       unsubSettings();
     };
   }, [fbUser]);
+
+  useEffect(() => {
+    if (loggedInUser && !loggedInUser.isAdmin && staffList.length > 0) {
+      const found = staffList.find(
+        (s) => s.username.toLowerCase() === loggedInUser.username.toLowerCase()
+      );
+      if (!found || !found.active) {
+        handleLogout();
+      }
+    }
+  }, [loggedInUser, staffList]);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -396,21 +396,13 @@ export default function App() {
     customerName: string;
     orderNumber: string;
     modelName: string;
-    tileSize?: string;
-    finish?: string;
     quantity: string;
     supplier: string;
     isOrdered: boolean;
     eta: string;
     notes: string;
   }) => {
-    const {
-      notificationEmail,
-      emailjsServiceId,
-      emailjsTemplateId,
-      emailjsPublicKey,
-    } = settings;
-
+    const { notificationEmail, emailjsServiceId, emailjsTemplateId, emailjsPublicKey } = settings;
     if (!notificationEmail || !emailjsServiceId || !emailjsTemplateId || !emailjsPublicKey) return;
 
     const subject =
@@ -423,8 +415,6 @@ export default function App() {
       `סוג הזמנה: ${data.orderType}`,
       ...(data.orderType === 'B2B' ? [`שם לקוח: ${data.customerName}`, `מספר הזמנה: ${data.orderNumber}`] : []),
       `דגם / מק"ט: ${data.modelName}`,
-      `מידת אריח: ${data.tileSize || '-'}`,
-      `גימור: ${data.finish || '-'}`,
       `כמות / מ"ר: ${data.quantity || '-'}`,
       `ספק / מפעל: ${data.supplier || '-'}`,
       `סטטוס הזמנה: ${data.isOrdered ? 'הוזמן מהספק' : 'טרם הוזמן'}`,
@@ -452,6 +442,7 @@ export default function App() {
     }
   };
 
+  // --- Admin Authorized Staff Management ---
   const handleAddStaff = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isAdmin) return;
@@ -461,7 +452,10 @@ export default function App() {
     }
 
     const uLower = newStaffUsername.trim().toLowerCase();
-    if (uLower === DEFAULT_ADMIN_USERNAME.toLowerCase() || staffList.some((s) => s.username.toLowerCase() === uLower)) {
+    if (
+      uLower === DEFAULT_ADMIN_USERNAME.toLowerCase() ||
+      staffList.some((s) => s.username.toLowerCase() === uLower)
+    ) {
       alert('שם משתמש זה כבר קיים במערכת.');
       return;
     }
@@ -477,22 +471,9 @@ export default function App() {
       setNewStaffUsername('');
       setNewStaffPassword('');
     } catch {
-      alert('שגיאה בהוספת המשתמש');
+      alert('שגיאה בהוספת המשתמש לרשימת המורשים');
     } finally {
       setCreatingStaff(false);
-    }
-  };
-
-  const handleSaveStaffEdit = async (id: string) => {
-    if (!isAdmin || !editStaffUsername.trim() || !editStaffPassword.trim()) return;
-    try {
-      await updateDoc(doc(db, ...STAFF_PATH, id), {
-        username: editStaffUsername.trim(),
-        password: editStaffPassword.trim(),
-      });
-      setEditingStaffId(null);
-    } catch {
-      alert('שגיאה בעדכון');
     }
   };
 
@@ -501,18 +482,18 @@ export default function App() {
     try {
       await updateDoc(doc(db, ...STAFF_PATH, staff.id), { active: !staff.active });
     } catch {
-      alert('שגיאה בשינוי סטטוס');
+      alert('שגיאה בשינוי סטטוס המשתמש');
     }
   };
 
   const handleDeleteStaff = async (staff: StaffRecord) => {
     if (!isAdmin) return;
-    const ok = window.confirm(`למחוק לצמיתות את "${staff.username}"?`);
+    const ok = window.confirm(`האם למחוק לצמיתות את "${staff.username}" מרשימת המורשים?`);
     if (!ok) return;
     try {
       await deleteDoc(doc(db, ...STAFF_PATH, staff.id));
     } catch {
-      alert('שגיאה במחיקה');
+      alert('שגיאה במחיקת המשתמש');
     }
   };
 
@@ -540,6 +521,7 @@ export default function App() {
     }
   };
 
+  // --- Order Handlers ---
   const openNewModal = () => {
     setEditingOrder(null);
     setFormData({
@@ -547,8 +529,6 @@ export default function App() {
       customerName: '',
       orderNumber: '',
       modelName: '',
-      tileSize: '',
-      finish: '',
       quantity: '',
       supplier: '',
       isOrdered: false,
@@ -566,8 +546,6 @@ export default function App() {
       customerName: order.customerName,
       orderNumber: order.orderNumber || '',
       modelName: order.modelName,
-      tileSize: order.tileSize || '',
-      finish: order.finish || '',
       quantity: order.quantity,
       supplier: order.supplier,
       isOrdered: Boolean(order.isOrdered),
@@ -585,40 +563,45 @@ export default function App() {
     try {
       const compressedList: string[] = [];
       for (let i = 0; i < files.length; i++) {
-        compressedList.push(await compressImage(files[i]));
+        const compressed = await compressImage(files[i]);
+        compressedList.push(compressed);
       }
-      setFormData((prev) => ({ ...prev, images: [...prev.images, ...compressedList] }));
+      setFormData((prev) => ({
+        ...prev,
+        images: [...prev.images, ...compressedList],
+      }));
     } catch {
-      alert('שגיאה בטעינת תמונות');
+      alert('אירעה שגיאה בטעינת התמונות, נסה תמונה קטנה יותר.');
     }
     e.target.value = '';
   };
 
   const removeImageFromForm = (index: number) => {
-    setFormData((prev) => ({ ...prev, images: prev.images.filter((_, idx) => idx !== index) }));
+    setFormData((prev) => ({
+      ...prev,
+      images: prev.images.filter((_, idx) => idx !== index),
+    }));
   };
 
   const describeChanges = (oldOrder: Order, newData: typeof formData): string => {
     const changes: string[] = [];
-    if (oldOrder.orderType !== newData.orderType) changes.push('סוג הזמנה');
-    if (oldOrder.customerName !== newData.customerName) changes.push('שם לקוח');
-    if (oldOrder.orderNumber !== newData.orderNumber) changes.push('מספר הזמנה');
-    if (oldOrder.modelName !== newData.modelName) changes.push('דגם');
-    if (oldOrder.tileSize !== newData.tileSize) changes.push('מידת אריח');
-    if (oldOrder.finish !== newData.finish) changes.push('גימור');
-    if (oldOrder.quantity !== newData.quantity) changes.push('כמות');
-    if (oldOrder.supplier !== newData.supplier) changes.push('ספק');
-    if (Boolean(oldOrder.isOrdered) !== Boolean(newData.isOrdered)) changes.push('סטטוס הזמנה');
-    if (oldOrder.eta !== newData.eta) changes.push('צפי הגעה');
-    if (oldOrder.notes !== newData.notes) changes.push('הערות');
-    if ((oldOrder.images?.length || 0) !== newData.images.length) changes.push('תמונות');
-    return changes.length > 0 ? `ערך: ${changes.join(', ')}` : 'שמר עריכה ללא שינויים';
+    if (oldOrder.orderType !== newData.orderType) changes.push(`סוג הזמנה`);
+    if (oldOrder.customerName !== newData.customerName) changes.push(`שם לקוח`);
+    if (oldOrder.orderNumber !== newData.orderNumber) changes.push(`מספר הזמנה`);
+    if (oldOrder.modelName !== newData.modelName) changes.push(`דגם`);
+    if (oldOrder.quantity !== newData.quantity) changes.push(`כמות`);
+    if (oldOrder.supplier !== newData.supplier) changes.push(`ספק`);
+    if (Boolean(oldOrder.isOrdered) !== Boolean(newData.isOrdered))
+      changes.push(`סטטוס הזמנה (${newData.isOrdered ? 'הוזמן' : 'לא הוזמן'})`);
+    if (oldOrder.eta !== newData.eta) changes.push(`צפי הגעה`);
+    if (oldOrder.notes !== newData.notes) changes.push(`הערות`);
+    return changes.length > 0 ? `ערך: ${changes.join(', ')}` : 'שמר עריכה ללא שינוי שדות';
   };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.modelName.trim()) {
-      alert('נא למלא דגם');
+      alert('נא למלא דגם / מק״ט קרמיקה');
       return;
     }
     if (formData.orderType === 'B2B' && (!formData.customerName.trim() || !formData.orderNumber.trim())) {
@@ -631,8 +614,6 @@ export default function App() {
       customerName: formData.orderType === 'B2B' ? formData.customerName.trim() : '',
       orderNumber: formData.orderType === 'B2B' ? formData.orderNumber.trim() : '',
       modelName: formData.modelName.trim(),
-      tileSize: formData.tileSize.trim(),
-      finish: formData.finish.trim(),
       quantity: formData.quantity.trim(),
       supplier: formData.supplier.trim(),
       isOrdered: Boolean(formData.isOrdered),
@@ -668,78 +649,97 @@ export default function App() {
         sendBackgroundOfficeEmail(cleanedPayload);
       }
       setIsModalOpen(false);
-    } catch {
-      alert('שגיאה בשמירה');
+    } catch (err) {
+      console.error('Save error:', err);
+      alert('שגיאה בשמירה לענן.');
     } finally {
       setSaving(false);
     }
   };
 
   const handleToggleOrderedQuick = async (order: Order) => {
+    if (!window.confirm('האם אתה בטוח?')) return;
+    
     const nextVal = !order.isOrdered;
     try {
+      const logEntry: LogEntry = {
+        user: currentDisplayName,
+        action: nextVal ? 'סימן V: הוזמן מהספק' : 'ביטל סימון הוזמן',
+        timestamp: Date.now(),
+      };
       await updateDoc(doc(db, ...ORDERS_PATH, order.id), {
         isOrdered: nextVal,
-        logs: arrayUnion({
-          user: currentDisplayName,
-          action: nextVal ? 'סימן V: הוזמן' : 'ביטל סימון הוזמן',
-          timestamp: Date.now(),
-        }),
+        logs: arrayUnion(logEntry),
       });
     } catch {
-      alert('שגיאה בעדכון');
+      alert('שגיאה בעדכון סטטוס הזמנה');
     }
   };
 
   const handleConfirmReceived = async (order: Order) => {
-    if (!isAdmin) return;
-    if (!window.confirm('האם לאשר אספקה ומסירה?')) return;
+    // הפונקציה כעת זמינה לכל מורשה מחובר, ודורשת אישור קופץ
+    if (!window.confirm('האם אתה בטוח?')) return;
+
     try {
+      const logEntry: LogEntry = {
+        user: currentDisplayName,
+        action: 'אישר אספקה ומסירה ("התקבל")',
+        timestamp: Date.now(),
+      };
       await updateDoc(doc(db, ...ORDERS_PATH, order.id), {
         isReceived: true,
         isOrdered: true,
-        logs: arrayUnion({ user: currentDisplayName, action: 'אישר קבלת סחורה', timestamp: Date.now() }),
+        logs: arrayUnion(logEntry),
       });
-    } catch {
-      alert('שגיאה באישור');
+    } catch (err) {
+      console.error('Status update error:', err);
+      alert('שגיאה באישור ההזמנה');
     }
   };
 
   const handleDelete = async (order: Order) => {
     if (!isAdmin) return;
-    const title = order.orderType === 'B2B' ? `${order.customerName}` : `${order.modelName}`;
-    if (!window.confirm(`האם למחוק לצמיתות את "${title}"?`)) return;
+    const confirmed = window.confirm('האם למחוק לצמיתות את ההזמנה?');
+    if (!confirmed) return;
+
     try {
       await deleteDoc(doc(db, ...ORDERS_PATH, order.id));
       if (activeDetailsOrderId === order.id) setActiveDetailsOrderId(null);
-    } catch {
-      alert('שגיאה במחיקה');
+    } catch (err) {
+      console.error('Delete error:', err);
+      alert('שגיאה במחיקת ההזמנה');
     }
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeDetailsOrderId || !newMessageText.trim()) return;
+
     setSendingMsg(true);
     try {
+      const msg: ChatMessage = {
+        user: currentDisplayName,
+        text: newMessageText.trim(),
+        timestamp: Date.now(),
+      };
       await updateDoc(doc(db, ...ORDERS_PATH, activeDetailsOrderId), {
-        messages: arrayUnion({ user: currentDisplayName, text: newMessageText.trim(), timestamp: Date.now() }),
+        messages: arrayUnion(msg),
       });
       setNewMessageText('');
-    } catch {
-      alert('שגיאה בשליחה');
+    } catch (err) {
+      console.error('Chat send error:', err);
+      alert('שגיאה בשליחת ההודעה');
     } finally {
       setSendingMsg(false);
     }
   };
 
   const handleExportBackup = () => {
-    const dataStr = JSON.stringify(orders, null, 2);
-    const blob = new Blob([dataStr], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify(orders, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `ceramiso-orders-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `ceramiso-orders-backup-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -748,28 +748,28 @@ export default function App() {
     if (!isAdmin) return;
     const file = e.target.files?.[0];
     if (!file) return;
+
     try {
       const text = await file.text();
-      const imported = JSON.parse(text) as Order[];
-      for (const ord of imported) {
+      const importedOrders: Order[] = JSON.parse(text);
+      if (!Array.isArray(importedOrders)) throw new Error('Invalid format');
+      for (const ord of importedOrders) {
         const { id, ...rest } = ord;
-        await setDoc(doc(db, ...ORDERS_PATH, id || `imp_${Date.now()}`), rest, { merge: true });
+        await setDoc(doc(db, ...ORDERS_PATH, id || `imp_${Date.now()}_${Math.random()}`), rest, { merge: true });
       }
-      alert('שוחזר בהצלחה!');
+      alert(`שוחזרו בהצלחה ${importedOrders.length} הזמנות!`);
     } catch {
-      alert('קובץ לא תקין');
+      alert('קובץ הגיבוי אינו תקין.');
     }
     e.target.value = '';
   };
 
-  // --- Screens ---
-
   if (connecting) {
     return (
-      <div dir="rtl" className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <div className="text-center animate-pulse">
-          <div className="w-12 h-12 rounded-2xl bg-slate-900 text-amber-400 font-bold text-2xl flex items-center justify-center mx-auto mb-3 shadow-lg">C</div>
-          <p className="text-sm text-slate-500 font-medium">טוען מערכת...</p>
+      <div dir="rtl" className="min-h-screen bg-slate-50 flex items-center justify-center text-slate-700">
+        <div className="text-center">
+          <div className="w-12 h-12 rounded-2xl bg-slate-900 text-amber-400 font-bold text-2xl flex items-center justify-center mx-auto mb-3 animate-pulse">C</div>
+          <p className="text-sm font-medium text-slate-500">טוען את מערכת קרמיסו...</p>
         </div>
       </div>
     );
@@ -777,206 +777,202 @@ export default function App() {
 
   if (!loggedInUser) {
     return (
-      <div dir="rtl" className="min-h-screen bg-gradient-to-br from-slate-50 via-stone-50 to-slate-100 flex items-center justify-center p-4 sm:p-6">
-        <div className="bg-white/95 backdrop-blur-md rounded-3xl w-full max-w-sm sm:max-w-md p-6 sm:p-10 shadow-2xl border border-slate-200/80">
+      <div dir="rtl" className="min-h-screen bg-gradient-to-br from-slate-50 via-stone-50 to-slate-100 flex items-center justify-center p-4">
+        <div className="bg-white/95 backdrop-blur-md rounded-3xl max-w-md w-full p-6 sm:p-10 shadow-xl border border-slate-200/80">
           <div className="text-center mb-8">
             <div className="w-14 h-14 rounded-2xl bg-slate-900 flex items-center justify-center text-amber-400 font-bold text-2xl mx-auto shadow-md mb-4">C</div>
-            <span className="text-[10px] sm:text-[11px] font-bold tracking-[0.2em] uppercase text-amber-600 block mb-1">CERAMISO IMPORT</span>
-            <h1 className="text-xl sm:text-2xl font-bold text-slate-900">ניהול הזמנות</h1>
+            <span className="text-[11px] font-bold tracking-[0.2em] uppercase text-amber-600 block mb-1">CERAMISO IMPORT PORTAL</span>
+            <h1 className="text-2xl font-bold text-slate-900">ניהול הזמנות יבוא</h1>
           </div>
-          {loginError && (
-            <div className="bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium p-3.5 rounded-2xl mb-5 text-center">
-              {loginError}
-            </div>
-          )}
+          {loginError && <div className="bg-rose-50 border border-rose-200 text-rose-700 text-xs p-3.5 rounded-2xl mb-5 text-center">{loginError}</div>}
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-slate-600 mb-1.5">שם משתמש</label>
               <div className="relative">
                 <User className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
-                <input type="text" required autoFocus value={usernameInput} onChange={(e) => setUsernameInput(e.target.value)}
-                  className="w-full pr-10 pl-4 py-3 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-2xl text-sm focus:bg-white focus:ring-2 focus:ring-slate-900/10 focus:outline-none transition" />
+                <input type="text" required autoFocus value={usernameInput} onChange={(e) => setUsernameInput(e.target.value)} className="w-full pr-10 pl-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm focus:bg-white focus:outline-none focus:border-slate-400" />
               </div>
             </div>
             <div>
               <label className="block text-xs font-semibold text-slate-600 mb-1.5">סיסמה</label>
               <div className="relative">
                 <KeyRound className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
-                <input type="password" required dir="ltr" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)}
-                  className="w-full pr-10 pl-4 py-3 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-2xl text-sm text-left focus:bg-white focus:ring-2 focus:ring-slate-900/10 focus:outline-none transition" />
+                <input type="password" required dir="ltr" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} className="w-full pr-10 pl-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm focus:bg-white focus:outline-none focus:border-slate-400 text-left" />
               </div>
             </div>
-            <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-              <input type="checkbox" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} className="w-4 h-4 rounded border-slate-300 text-slate-900" />
-              <span className="text-xs font-medium text-slate-600">זכור אותי</span>
-            </label>
-            <button type="submit" className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 text-white font-semibold text-sm rounded-2xl shadow-md transition mt-2 active:scale-95">
-              כניסה
-            </button>
+            <button type="submit" className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 text-white font-semibold text-sm rounded-2xl shadow-sm transition mt-2">כניסה למערכת</button>
           </form>
         </div>
       </div>
     );
   }
 
+  const totalCount = orders.length;
+  const notOrderedCount = orders.filter((o) => !o.isOrdered && !o.isReceived).length;
+  const orderedCount = orders.filter((o) => o.isOrdered && !o.isReceived).length;
+  const receivedCount = orders.filter((o) => o.isReceived).length;
+
   const filteredOrders = orders.filter((order) => {
-    const s = searchTerm.toLowerCase();
-    const matchSearch = order.customerName.toLowerCase().includes(s) || order.orderNumber.toLowerCase().includes(s) || order.modelName.toLowerCase().includes(s) || order.supplier.toLowerCase().includes(s);
-    const matchStatus = statusFilter === 'הכל' || (statusFilter === 'לא הוזמן' && !order.isOrdered && !order.isReceived) || (statusFilter === 'הוזמן' && order.isOrdered && !order.isReceived) || (statusFilter === 'התקבל' && order.isReceived);
-    const matchType = typeFilter === 'הכל' || order.orderType === typeFilter;
-    return matchSearch && matchStatus && matchType;
+    const matchesSearch =
+      order.customerName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      order.orderNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      order.modelName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      order.supplier.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesStatus =
+      statusFilter === 'הכל' ||
+      (statusFilter === 'לא הוזמן' && !order.isOrdered && !order.isReceived) ||
+      (statusFilter === 'הוזמן' && order.isOrdered && !order.isReceived) ||
+      (statusFilter === 'התקבל' && order.isReceived);
+    const matchesType = typeFilter === 'הכל' || order.orderType === typeFilter;
+    return matchesSearch && matchesStatus && matchesType;
   });
 
   const activeDetailsOrder = orders.find((o) => o.id === activeDetailsOrderId) || null;
 
   return (
-    <div dir="rtl" className="min-h-screen bg-[#F8F9FA] text-slate-800 pb-20 antialiased">
+    <div dir="rtl" className="min-h-screen bg-[#F8F9FA] text-slate-800 pb-16 antialiased">
+      {/* Header */}
       <header className="bg-white/90 backdrop-blur-md border-b border-slate-200/80 sticky top-0 z-20">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3.5 flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-4">
-          <div className="flex w-full sm:w-auto items-center justify-between sm:justify-start gap-3.5">
-            <div className="flex items-center gap-3.5">
-              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-slate-900 flex items-center justify-center text-amber-400 font-bold text-lg shadow-sm">C</div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h1 className="text-sm sm:text-lg font-bold text-slate-900">קרמיסו • הזמנות יבוא</h1>
-                  {isAdmin && <span className="hidden sm:inline-flex items-center gap-1 text-[10px] sm:text-[11px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full font-semibold"><ShieldCheck className="w-3 h-3" /> מנהל</span>}
-                </div>
-                <div className="flex items-center gap-2 text-[11px] sm:text-xs text-slate-500 mt-0.5">
-                  <span className="font-medium">{currentDisplayName}</span>
-                  <span>•</span>
-                  <button onClick={handleLogout} className="text-slate-400 hover:text-slate-800 flex items-center gap-1"><LogOut className="w-3 h-3" /> התנתק</button>
-                </div>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5">
+            <div className="w-10 h-10 rounded-xl bg-slate-900 flex items-center justify-center text-amber-400 font-bold text-lg">C</div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-base sm:text-lg font-bold text-slate-900">קרמיסו • הזמנות יבוא</h1>
+                {isAdmin && <span className="inline-flex items-center gap-1 text-[10px] sm:text-[11px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full font-semibold"><ShieldCheck className="w-3 h-3" /> מנהל</span>}
+              </div>
+              <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
+                <span className="font-medium">{currentDisplayName}</span>
+                <span className="text-slate-300">•</span>
+                <button onClick={handleLogout} className="inline-flex items-center gap-1 text-slate-400 hover:text-slate-800">
+                  <LogOut className="w-3 h-3" /> <span>התנתק</span>
+                </button>
               </div>
             </div>
           </div>
-          
-          <div className="flex w-full sm:w-auto items-center gap-2 justify-end">
+
+          <div className="flex flex-wrap items-center gap-2">
             {isAdmin && (
               <>
-                <button onClick={() => setIsAdminModalOpen(true)} className="flex-1 sm:flex-none justify-center flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-slate-700 transition">
-                  <Users className="w-4 h-4 text-slate-500" />
-                  <span className="hidden sm:inline">מורשים והגדרות</span>
-                  <span className="sm:hidden">הגדרות</span>
+                <button onClick={() => setIsAdminModalOpen(true)} className="flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold px-3 py-2 sm:px-3.5 sm:py-2.5 rounded-xl transition">
+                  <Users className="w-4 h-4" /> <span className="hidden sm:inline">הגדרות</span>
                 </button>
-                <div className="hidden sm:flex items-center gap-2">
-                  <button onClick={handleExportBackup} className="p-2.5 bg-slate-100 text-slate-600 rounded-xl"><Download className="w-4 h-4" /></button>
-                  <button onClick={() => importInputRef.current?.click()} className="p-2.5 bg-slate-100 text-slate-600 rounded-xl"><Upload className="w-4 h-4" /></button>
-                  <input ref={importInputRef} type="file" accept=".json" onChange={handleImportBackup} className="hidden" />
-                </div>
+                <button onClick={handleExportBackup} title="גיבוי" className="p-2 sm:p-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl transition"><Download className="w-4 h-4" /></button>
+                <button onClick={() => importInputRef.current?.click()} title="שחזור" className="p-2 sm:p-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl transition"><Upload className="w-4 h-4" /></button>
+                <input ref={importInputRef} type="file" accept=".json" onChange={handleImportBackup} className="hidden" />
               </>
             )}
-            <button onClick={openNewModal} className="flex-1 sm:flex-none justify-center flex items-center gap-1.5 bg-slate-900 text-white font-semibold text-xs sm:text-sm px-4 py-2.5 rounded-xl shadow-sm hover:bg-slate-800 transition active:scale-95">
-              <Plus className="w-4 h-4 text-amber-400" /> הזמנה חדשה
+            <button onClick={openNewModal} className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs sm:text-sm px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl shadow-xs transition">
+              <Plus className="w-4 h-4 text-amber-400" /> <span>הזמנה חדשה</span>
             </button>
           </div>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 mt-4 sm:mt-6">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3 mb-4 sm:mb-6">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 mt-6">
+        {/* KPI Row */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
           {[
-            { label: 'כל ההזמנות', value: orders.length, filter: 'הכל', c: 'text-slate-900' },
-            { label: 'ממתינות להזמנה', value: orders.filter(o=>!o.isOrdered && !o.isReceived).length, filter: 'לא הוזמן', c: 'text-amber-600' },
-            { label: 'הוזמנו מספק', value: orders.filter(o=>o.isOrdered && !o.isReceived).length, filter: 'הוזמן', c: 'text-blue-600' },
-            { label: 'התקבלו וסופקו', value: orders.filter(o=>o.isReceived).length, filter: 'התקבל', c: 'text-emerald-600' }
-          ].map((st) => (
-            <button key={st.filter} onClick={() => setStatusFilter(st.filter)}
-              className={`text-right p-3 sm:p-4 rounded-2xl border transition ${statusFilter === st.filter ? 'bg-white shadow-sm ring-1 ring-slate-900/10' : 'bg-white/70 border-slate-200/70'}`}>
-              <span className="text-[10px] sm:text-xs font-medium text-slate-500 block">{st.label}</span>
-              <span className={`text-xl sm:text-2xl font-bold mt-1 block ${st.c}`}>{st.value}</span>
+            { label: 'כל ההזמנות', value: totalCount, filter: 'הכל', color: 'text-slate-900' },
+            { label: 'ממתינות להזמנה', value: notOrderedCount, filter: 'לא הוזמן', color: 'text-amber-600' },
+            { label: 'הוזמנו מספק', value: orderedCount, filter: 'הוזמן', color: 'text-blue-600' },
+            { label: 'התקבלו וסופקו', value: receivedCount, filter: 'התקבל', color: 'text-emerald-600' },
+          ].map((stat) => (
+            <button key={stat.filter} onClick={() => setStatusFilter(stat.filter)} className={`text-right p-3.5 sm:p-4 rounded-2xl border transition ${statusFilter === stat.filter ? 'bg-white border-slate-900/20 shadow-sm ring-1 ring-slate-900/10' : 'bg-white/70 hover:bg-white border-slate-200/70'}`}>
+              <span className="text-[11px] sm:text-xs font-medium text-slate-500 block">{stat.label}</span>
+              <span className={`text-xl sm:text-2xl font-bold mt-1 block ${stat.color}`}>{stat.value}</span>
             </button>
           ))}
         </div>
 
-        <div className="bg-white p-2.5 sm:p-3.5 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-3 mb-6">
+        {/* Filter Bar */}
+        <div className="bg-white p-3 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 mb-6">
           <div className="relative flex-1">
-            <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
-            <input type="text" placeholder="חיפוש לפי לקוח, מק״ט..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pr-10 pl-4 py-2.5 bg-slate-50 border-none rounded-xl text-sm focus:bg-slate-100 focus:outline-none" />
+            <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+            <input type="text" placeholder="חיפוש חופשי..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pr-9 pl-4 py-2 bg-slate-50 border border-transparent focus:border-slate-300 focus:bg-white rounded-xl text-sm outline-none transition" />
           </div>
-          <div className="flex items-center gap-2 overflow-x-auto [&::-webkit-scrollbar]:hidden">
-            <div className="flex bg-slate-100 p-1 rounded-xl shrink-0">
-              {['הכל', 'B2B', 'מלאי'].map(t => (
-                <button key={t} onClick={() => setTypeFilter(t)}
-                  className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-xs font-semibold ${typeFilter === t ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>{t}</button>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex bg-slate-100 p-1 rounded-xl">
+              {['הכל', 'B2B', 'מלאי'].map((t) => (
+                <button key={t} onClick={() => setTypeFilter(t)} className={`px-3 py-1.5 rounded-lg text-[11px] sm:text-xs font-semibold transition ${typeFilter === t ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>{t}</button>
               ))}
             </div>
-            <div className="flex bg-slate-100 p-1 rounded-xl shrink-0">
-              {['הכל', 'לא הוזמן', 'הוזמן', 'התקבל'].map(s => (
-                <button key={s} onClick={() => setStatusFilter(s)}
-                  className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-xs font-semibold ${statusFilter === s ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-500'}`}>{s}</button>
+            <div className="flex bg-slate-100 p-1 rounded-xl overflow-x-auto">
+              {['הכל', 'לא הוזמן', 'הוזמן', 'התקבל'].map((status) => (
+                <button key={status} onClick={() => setStatusFilter(status)} className={`px-3 py-1.5 rounded-lg text-[11px] sm:text-xs font-semibold whitespace-nowrap transition ${statusFilter === status ? 'bg-slate-900 text-white' : 'text-slate-500'}`}>{status}</button>
               ))}
             </div>
           </div>
         </div>
 
+        {/* Orders Grid */}
         {filteredOrders.length === 0 ? (
-          <div className="bg-white rounded-3xl p-10 sm:p-16 text-center border border-slate-200">
-            <Package className="w-10 h-10 text-slate-300 mx-auto mb-3" />
-            <h3 className="font-bold text-slate-800">לא נמצאו הזמנות</h3>
+          <div className="bg-white rounded-3xl p-12 sm:p-16 text-center border border-slate-200">
+            <Package className="w-8 h-8 text-slate-300 mx-auto mb-3" />
+            <h3 className="text-base font-bold text-slate-800">לא נמצאו הזמנות</h3>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
-            {filteredOrders.map(order => (
-              <div key={order.id} className="bg-white rounded-2xl border border-slate-200/80 hover:border-slate-300 shadow-sm flex flex-col justify-between">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+            {filteredOrders.map((order) => (
+              <div key={order.id} className="bg-white rounded-2xl border border-slate-200 flex flex-col justify-between overflow-hidden shadow-sm hover:shadow-md transition">
                 <div>
-                  <div className="px-4 sm:px-5 pt-4 sm:pt-5 pb-3 flex justify-between gap-2">
+                  <div className="px-5 pt-5 pb-3 flex items-start justify-between">
                     <div>
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[10px] sm:text-[11px] font-bold ${order.orderType === 'B2B' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700'}`}>
-                          {order.orderType === 'B2B' ? <Building2 className="w-3 h-3 text-amber-400"/> : <Layers className="w-3 h-3"/>} {order.orderType}
+                      <div className="flex flex-wrap gap-1.5">
+                        <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[10px] font-bold ${order.orderType === 'B2B' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700'}`}>
+                          {order.orderType === 'B2B' ? <Building2 className="w-3 h-3 text-amber-400" /> : <Layers className="w-3 h-3 text-slate-500" />} {order.orderType}
                         </span>
                         {order.isReceived ? (
-                          <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 ring-1 ring-emerald-600/15">התקבל</span>
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700"><CheckCircle2 className="w-3 h-3" /> התקבל</span>
                         ) : order.isOrdered ? (
-                          <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-50 text-blue-700 ring-1 ring-blue-600/15">הוזמן</span>
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-blue-50 text-blue-700"><ShoppingBag className="w-3 h-3" /> הוזמן</span>
                         ) : (
-                          <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 ring-1 ring-amber-600/20">טרם הוזמן</span>
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700"><Clock className="w-3 h-3" /> טרם הוזמן</span>
                         )}
                       </div>
-                      <div className="mt-2.5">
-                        <h3 className="text-sm sm:text-base font-bold text-slate-900 leading-snug">{order.orderType === 'B2B' ? order.customerName : 'מלאי'}</h3>
-                        {order.orderType === 'B2B' && <span className="text-[11px] sm:text-xs font-medium text-slate-500 flex items-center gap-1 mt-0.5"><Hash className="w-3 h-3"/> הזמנה {order.orderNumber}</span>}
-                      </div>
+                      <h3 className="text-sm sm:text-base font-bold text-slate-900 mt-2">{order.orderType === 'B2B' ? order.customerName : 'הזמנת מלאי'}</h3>
                     </div>
-                    <div className="flex gap-0.5">
-                      <button onClick={() => openEditModal(order)} className="p-2 sm:p-2.5 text-slate-400 hover:text-slate-900 bg-slate-50 rounded-xl"><Edit3 className="w-4 h-4" /></button>
-                      {isAdmin && <button onClick={() => handleDelete(order)} className="p-2 sm:p-2.5 text-slate-400 hover:text-rose-600 bg-slate-50 rounded-xl"><Trash2 className="w-4 h-4" /></button>}
+                    <div className="flex items-center gap-0.5">
+                      <button onClick={() => openEditModal(order)} className="p-2 text-slate-400 hover:text-slate-900 hover:bg-slate-100 rounded-xl"><Edit3 className="w-4 h-4" /></button>
+                      {isAdmin && <button onClick={() => handleDelete(order)} className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl"><Trash2 className="w-4 h-4" /></button>}
                     </div>
                   </div>
-                  <div className="px-4 sm:px-5 py-3 border-t border-slate-100 space-y-1.5 sm:space-y-2 text-xs sm:text-sm">
-                    <div className="flex justify-between gap-3"><span className="text-slate-400 shrink-0">דגם/מק״ט</span><span className="font-semibold text-slate-900 text-left">{order.modelName}</span></div>
-                    {order.tileSize && <div className="flex justify-between gap-3"><span className="text-slate-400">מידת אריח</span><span className="font-medium text-slate-700">{order.tileSize}</span></div>}
-                    {order.finish && <div className="flex justify-between gap-3"><span className="text-slate-400">גימור</span><span className="font-medium text-slate-700">{order.finish}</span></div>}
-                    {order.quantity && <div className="flex justify-between gap-3"><span className="text-slate-400">כמות</span><span className="font-medium text-slate-700">{order.quantity}</span></div>}
-                    {order.supplier && <div className="flex justify-between gap-3"><span className="text-slate-400">ספק</span><span className="font-medium text-slate-700">{order.supplier}</span></div>}
-                    {order.eta && <div className="flex justify-between gap-3"><span className="text-slate-400 flex items-center gap-1"><Calendar className="w-3 h-3"/> צפי הגעה</span><span className="font-medium text-slate-700">{order.eta}</span></div>}
-                    {order.notes && <div className="mt-2 bg-slate-50 p-2 sm:p-3 rounded-xl text-xs text-slate-600 flex items-start gap-1.5"><FileText className="w-3.5 h-3.5 shrink-0 mt-0.5"/><span>{order.notes}</span></div>}
+                  <div className="px-5 py-3 border-t border-slate-100 space-y-2 text-xs sm:text-sm">
+                    <div className="flex justify-between gap-2"><span className="text-slate-400">דגם</span><span className="font-semibold">{order.modelName}</span></div>
+                    {order.quantity && <div className="flex justify-between gap-2"><span className="text-slate-400">כמות</span><span className="font-medium">{order.quantity}</span></div>}
+                    {order.supplier && <div className="flex justify-between gap-2"><span className="text-slate-400">ספק</span><span className="font-medium">{order.supplier}</span></div>}
+                    {order.eta && <div className="flex justify-between gap-2"><span className="text-slate-400 flex items-center gap-1"><Calendar className="w-3 h-3"/> צפי</span><span className="font-medium">{order.eta}</span></div>}
+                    {order.notes && <div className="mt-2 bg-slate-50 p-2 rounded-xl text-xs text-slate-600 flex gap-2"><FileText className="w-3 h-3 shrink-0" /><span>{order.notes}</span></div>}
                   </div>
                 </div>
-                <div className="px-4 sm:px-5 pb-4 sm:pb-5 pt-2 space-y-2.5 sm:space-y-3">
-                  {order.images?.length > 0 && (
+                <div className="px-5 pb-5 pt-2 space-y-3">
+                  {order.images && order.images.length > 0 && (
                     <div className="grid grid-cols-4 gap-2">
                       {order.images.map((img, idx) => (
                         <button key={idx} onClick={() => setLightboxImage(img)} className="relative aspect-square rounded-xl overflow-hidden border border-slate-200">
-                          <img src={img} className="w-full h-full object-cover" alt="" />
-                          <div className="absolute inset-0 bg-black/20 flex items-center justify-center opacity-0 hover:opacity-100"><ZoomIn className="w-4 h-4 text-white" /></div>
+                          <img src={img} className="w-full h-full object-cover" alt="img"/>
                         </button>
                       ))}
                     </div>
                   )}
+
                   {!order.isReceived && (
-                    <label className="flex items-center justify-between bg-slate-50 border border-slate-200/70 px-3.5 py-3 rounded-xl cursor-pointer">
+                    <label className="flex items-center justify-between bg-slate-50 hover:bg-slate-100 border border-slate-200 px-3.5 py-2.5 rounded-xl cursor-pointer">
                       <span className="text-xs font-semibold text-slate-700">הוזמן מהספק</span>
-                      <input type="checkbox" checked={Boolean(order.isOrdered)} onChange={() => handleToggleOrderedQuick(order)} className="w-4.5 h-4.5 rounded border-slate-300" />
+                      <input type="checkbox" checked={Boolean(order.isOrdered)} onChange={() => handleToggleOrderedQuick(order)} className="w-4 h-4 rounded border-slate-300" />
                     </label>
                   )}
+
                   <div className="grid grid-cols-2 gap-2">
-                    <button onClick={() => { setActiveDetailsOrderId(order.id); setActiveTab('chat'); }} className="py-2 sm:py-2.5 flex justify-center gap-1.5 bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-600"><MessageSquare className="w-3.5 h-3.5"/> הודעות ({order.messages?.length||0})</button>
-                    <button onClick={() => { setActiveDetailsOrderId(order.id); setActiveTab('logs'); }} className="py-2 sm:py-2.5 flex justify-center gap-1.5 bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-600"><History className="w-3.5 h-3.5"/> היסטוריה ({order.logs?.length||0})</button>
+                    <button onClick={() => { setActiveDetailsOrderId(order.id); setActiveTab('chat'); }} className="flex items-center justify-center gap-1.5 py-2 bg-white text-slate-600 border border-slate-200 font-medium text-[11px] sm:text-xs rounded-xl hover:bg-slate-50"><MessageSquare className="w-3.5 h-3.5" /> הודעות</button>
+                    <button onClick={() => { setActiveDetailsOrderId(order.id); setActiveTab('logs'); }} className="flex items-center justify-center gap-1.5 py-2 bg-white text-slate-600 border border-slate-200 font-medium text-[11px] sm:text-xs rounded-xl hover:bg-slate-50"><History className="w-3.5 h-3.5" /> היסטוריה</button>
                   </div>
-                  {isAdmin && !order.isReceived && (
-                    <button onClick={() => handleConfirmReceived(order)} className="w-full py-2.5 sm:py-3 bg-emerald-600 text-white text-xs font-semibold rounded-xl flex justify-center gap-1.5 mt-1 active:scale-95"><Check className="w-4 h-4"/> אישור התקבל וסופק</button>
+
+                  {/* כפתור "התקבל וסופק" נגיש לכל מורשה */}
+                  {!order.isReceived && (
+                    <button onClick={() => handleConfirmReceived(order)} className="w-full flex items-center justify-center gap-1.5 py-2.5 bg-emerald-600 text-white font-semibold text-xs rounded-xl hover:bg-emerald-500 transition">
+                      <Check className="w-4 h-4" /> אישור התקבל וסופק
+                    </button>
                   )}
                 </div>
               </div>
@@ -985,216 +981,171 @@ export default function App() {
         )}
       </main>
 
-      {/* New/Edit Order Modal */}
+      {/* Add / Edit Modal (Responsive) */}
       {isModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center sm:p-4">
-          <div className="bg-white w-full sm:max-w-lg h-[90vh] sm:h-auto sm:max-h-[85vh] sm:rounded-3xl rounded-t-3xl shadow-2xl flex flex-col">
-            <div className="px-5 sm:px-6 py-4 sm:py-5 border-b border-slate-100 flex items-center justify-between shrink-0">
-              <h2 className="text-base sm:text-lg font-bold text-slate-900">{editingOrder ? 'עריכת הזמנה' : 'הזמנה חדשה'}</h2>
-              <button onClick={() => setIsModalOpen(false)} className="p-2 bg-slate-50 text-slate-500 rounded-full"><X className="w-5 h-5" /></button>
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs z-50 flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-lg w-full shadow-2xl overflow-hidden my-4 sm:my-8 flex flex-col max-h-[90vh]">
+            <div className="px-5 py-4 sm:px-6 sm:py-5 border-b border-slate-100 flex items-center justify-between shrink-0">
+              <h2 className="text-base sm:text-lg font-bold text-slate-900">{editingOrder ? 'עריכת פרטי הזמנה' : 'הזמנה חדשה'}</h2>
+              <button onClick={() => setIsModalOpen(false)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-xl"><X className="w-5 h-5" /></button>
             </div>
-            <form onSubmit={handleSave} className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-4">
+            <form onSubmit={handleSave} className="p-5 sm:p-6 space-y-4 overflow-y-auto">
               <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1.5 rounded-2xl">
-                <button type="button" onClick={() => setFormData({...formData, orderType: 'B2B'})} className={`py-2.5 sm:py-3 rounded-xl text-xs font-bold flex justify-center gap-1.5 ${formData.orderType === 'B2B' ? 'bg-white shadow-sm' : 'text-slate-500'}`}><Building2 className="w-4 h-4 text-amber-500"/> B2B</button>
-                <button type="button" onClick={() => setFormData({...formData, orderType: 'מלאי'})} className={`py-2.5 sm:py-3 rounded-xl text-xs font-bold flex justify-center gap-1.5 ${formData.orderType === 'מלאי' ? 'bg-white shadow-sm' : 'text-slate-500'}`}><Layers className="w-4 h-4"/> מלאי</button>
+                <button type="button" onClick={() => setFormData({ ...formData, orderType: 'B2B' })} className={`py-2 px-2 rounded-xl font-bold text-xs flex justify-center gap-2 ${formData.orderType === 'B2B' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}><Building2 className="w-4 h-4" /> B2B</button>
+                <button type="button" onClick={() => setFormData({ ...formData, orderType: 'מלאי' })} className={`py-2 px-2 rounded-xl font-bold text-xs flex justify-center gap-2 ${formData.orderType === 'מלאי' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}><Layers className="w-4 h-4" /> מלאי</button>
               </div>
               {formData.orderType === 'B2B' && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 bg-slate-50 p-4 rounded-2xl border border-slate-200">
-                  <div><label className="block text-xs font-semibold mb-1.5">שם לקוח *</label><input type="text" required value={formData.customerName} onChange={e=>setFormData({...formData, customerName:e.target.value})} className="w-full p-3 rounded-xl border border-slate-200 text-sm" placeholder="שם הלקוח" /></div>
-                  <div><label className="block text-xs font-semibold mb-1.5">מספר הזמנה *</label><input type="text" required value={formData.orderNumber} onChange={e=>setFormData({...formData, orderNumber:e.target.value})} className="w-full p-3 rounded-xl border border-slate-200 text-sm" placeholder="10452" /></div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-200">
+                  <div><label className="block text-[11px] sm:text-xs font-semibold text-slate-700 mb-1">שם לקוח *</label><input type="text" required value={formData.customerName} onChange={(e) => setFormData({ ...formData, customerName: e.target.value })} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm" /></div>
+                  <div><label className="block text-[11px] sm:text-xs font-semibold text-slate-700 mb-1">מספר הזמנה *</label><input type="text" required value={formData.orderNumber} onChange={(e) => setFormData({ ...formData, orderNumber: e.target.value })} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm" /></div>
                 </div>
               )}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                <div><label className="block text-xs font-semibold mb-1.5">דגם / מק״ט *</label><input type="text" required value={formData.modelName} onChange={e=>setFormData({...formData, modelName:e.target.value})} className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:bg-white" /></div>
-                <div><label className="block text-xs font-semibold mb-1.5">מידת אריח</label><input type="text" value={formData.tileSize} onChange={e=>setFormData({...formData, tileSize:e.target.value})} className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:bg-white" placeholder="לדוגמה: 60x120" /></div>
-                <div><label className="block text-xs font-semibold mb-1.5">גימור</label><input type="text" value={formData.finish} onChange={e=>setFormData({...formData, finish:e.target.value})} className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:bg-white" placeholder="לדוגמה: מט / מבריק" /></div>
-                <div><label className="block text-xs font-semibold mb-1.5">כמות / מ״ר</label><input type="text" value={formData.quantity} onChange={e=>setFormData({...formData, quantity:e.target.value})} className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:bg-white" /></div>
-                <div><label className="block text-xs font-semibold mb-1.5">ספק</label><input type="text" value={formData.supplier} onChange={e=>setFormData({...formData, supplier:e.target.value})} className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:bg-white" /></div>
-                <div><label className="block text-xs font-semibold mb-1.5">צפי הגעה</label><input type="date" value={formData.eta} onChange={e=>setFormData({...formData, eta:e.target.value})} className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:bg-white" /></div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div><label className="block text-[11px] sm:text-xs font-semibold text-slate-600 mb-1">דגם / מק״ט *</label><input type="text" required value={formData.modelName} onChange={(e) => setFormData({ ...formData, modelName: e.target.value })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm" /></div>
+                <div><label className="block text-[11px] sm:text-xs font-semibold text-slate-600 mb-1">כמות / מ״ר</label><input type="text" value={formData.quantity} onChange={(e) => setFormData({ ...formData, quantity: e.target.value })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm" /></div>
+                <div><label className="block text-[11px] sm:text-xs font-semibold text-slate-600 mb-1">ספק / יבואן</label><input type="text" value={formData.supplier} onChange={(e) => setFormData({ ...formData, supplier: e.target.value })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm" /></div>
+                <div><label className="block text-[11px] sm:text-xs font-semibold text-slate-600 mb-1">צפי הגעה</label><input type="date" value={formData.eta} onChange={(e) => setFormData({ ...formData, eta: e.target.value })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm" /></div>
               </div>
-              <label className="flex justify-between items-center bg-slate-50 border border-slate-200 p-3.5 rounded-2xl">
-                <div>
-                  <span className="block text-sm font-semibold">הוזמן מהספק</span>
-                  <span className="block text-[11px] text-slate-400">ברירת מחדל: לא</span>
-                </div>
-                <input type="checkbox" checked={formData.isOrdered} onChange={e=>setFormData({...formData, isOrdered:e.target.checked})} className="w-5 h-5" />
+              <label className="flex items-center justify-between bg-slate-50 border border-slate-200 p-3 rounded-2xl cursor-pointer">
+                <span className="text-sm font-semibold">הוזמן מהספק</span>
+                <input type="checkbox" checked={formData.isOrdered} onChange={(e) => setFormData({ ...formData, isOrdered: e.target.checked })} className="w-4 h-4 rounded border-slate-300" />
               </label>
               <div>
-                <label className="block text-xs font-semibold mb-1.5">הערות</label>
-                <textarea rows={2} value={formData.notes} onChange={e=>setFormData({...formData, notes:e.target.value})} className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:bg-white" />
+                <label className="block text-[11px] sm:text-xs font-semibold text-slate-600 mb-1">הערות</label>
+                <textarea rows={2} value={formData.notes} onChange={(e) => setFormData({ ...formData, notes: e.target.value })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm" />
               </div>
               <div>
-                <label className="block text-xs font-semibold mb-1.5">תמונות / תעודות</label>
-                <label className="flex flex-col items-center p-4 border border-dashed border-slate-300 rounded-2xl bg-slate-50 cursor-pointer">
-                  <ImageIcon className="w-5 h-5 text-slate-400" />
-                  <span className="text-xs text-slate-600 mt-1">לחץ להעלאת תמונות</span>
-                  <input type="file" multiple accept="image/*" onChange={handleImageUpload} className="hidden" />
+                <label className="block text-[11px] sm:text-xs font-semibold text-slate-600 mb-1">תמונות (אופציונלי)</label>
+                <label className="flex flex-col items-center justify-center border border-dashed border-slate-300 rounded-2xl p-4 cursor-pointer bg-slate-50">
+                  <ImageIcon className="w-5 h-5 text-slate-400 mb-1" />
+                  <span className="text-xs text-slate-500">העלה תמונה מהמחשב/טלפון</span>
+                  <input type="file" accept="image/*" multiple onChange={handleImageUpload} className="hidden" />
                 </label>
                 {formData.images.length > 0 && (
-                  <div className="grid grid-cols-4 gap-2 mt-3">
-                    {formData.images.map((img, i) => (
-                      <div key={i} className="relative aspect-square rounded-xl border border-slate-200 overflow-hidden">
+                  <div className="grid grid-cols-4 gap-2 mt-2">
+                    {formData.images.map((img, idx) => (
+                      <div key={idx} className="relative aspect-square rounded-xl overflow-hidden border">
                         <img src={img} className="w-full h-full object-cover" alt="" />
-                        <button type="button" onClick={() => removeImageFromForm(i)} className="absolute top-1 right-1 bg-slate-900/70 text-white rounded-full p-1"><X className="w-3 h-3"/></button>
+                        <button type="button" onClick={() => removeImageFromForm(idx)} className="absolute top-1 right-1 bg-black/50 text-white rounded-full p-1"><X className="w-3 h-3" /></button>
                       </div>
                     ))}
                   </div>
                 )}
               </div>
-            </form>
-            <div className="p-4 sm:p-5 border-t border-slate-100 flex gap-3 shrink-0">
-              <button type="button" onClick={() => setIsModalOpen(false)} className="px-5 py-3.5 bg-slate-100 text-slate-600 text-sm font-semibold rounded-xl flex-1">ביטול</button>
-              <button onClick={handleSave} disabled={saving} className="px-5 py-3.5 bg-slate-900 text-white text-sm font-semibold rounded-xl flex-[2] active:scale-95 disabled:opacity-50">{saving ? 'שומר...' : (editingOrder ? 'שמור שינויים' : 'צור הזמנה')}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Admin Settings Modal */}
-      {isAdmin && isAdminModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center sm:p-4">
-          <div className="bg-white w-full sm:max-w-xl h-[90vh] sm:h-auto sm:max-h-[85vh] sm:rounded-3xl rounded-t-3xl shadow-2xl flex flex-col">
-            <div className="px-5 sm:px-6 py-4 sm:py-5 border-b border-slate-100 flex justify-between items-center shrink-0">
-              <h2 className="text-base sm:text-lg font-bold">הגדרות מנהל</h2>
-              <button onClick={() => setIsAdminModalOpen(false)} className="p-2 bg-slate-50 text-slate-500 rounded-full"><X className="w-5 h-5"/></button>
-            </div>
-            
-            <div className="flex px-4 sm:px-6 mt-4 gap-2 shrink-0">
-              <button onClick={() => setAdminActiveTab('staff')} className={`flex-1 py-2 text-xs sm:text-sm font-semibold rounded-xl ${adminActiveTab === 'staff' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}>ניהול מורשים</button>
-              <button onClick={() => setAdminActiveTab('settings')} className={`flex-1 py-2 text-xs sm:text-sm font-semibold rounded-xl ${adminActiveTab === 'settings' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}>הגדרות מייל וסיסמה</button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-4 sm:p-6">
-              {adminActiveTab === 'staff' ? (
-                <div className="space-y-6">
-                  <form onSubmit={handleAddStaff} className="bg-slate-50 p-4 rounded-2xl border border-slate-200">
-                    <h3 className="text-sm font-bold mb-3 text-slate-800">הוספת עובד מורשה חדש</h3>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-                      <input type="text" placeholder="שם משתמש" value={newStaffUsername} onChange={e=>setNewStaffUsername(e.target.value)} className="p-3 bg-white border border-slate-200 rounded-xl text-sm" />
-                      <input type="text" placeholder="סיסמה" value={newStaffPassword} onChange={e=>setNewStaffPassword(e.target.value)} className="p-3 bg-white border border-slate-200 rounded-xl text-sm" />
-                    </div>
-                    <button type="submit" disabled={creatingStaff} className="w-full py-3 bg-slate-900 text-white text-xs font-bold rounded-xl active:scale-95">הוסף עובד</button>
-                  </form>
-                  <div>
-                    <h3 className="text-sm font-bold mb-3 text-slate-800">עובדים קיימים ({staffList.length})</h3>
-                    <div className="space-y-2">
-                      {staffList.map(staff => (
-                        <div key={staff.id} className="bg-white p-3.5 border border-slate-200 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-                          {editingStaffId === staff.id ? (
-                            <div className="flex-1 flex flex-col sm:flex-row gap-2 w-full">
-                              <input value={editStaffUsername} onChange={e=>setEditStaffUsername(e.target.value)} className="p-2 border rounded-lg text-sm w-full sm:w-auto" />
-                              <input value={editStaffPassword} onChange={e=>setEditStaffPassword(e.target.value)} className="p-2 border rounded-lg text-sm w-full sm:w-auto" />
-                              <button onClick={() => handleSaveStaffEdit(staff.id)} className="bg-slate-900 text-white px-3 py-2 rounded-lg text-xs w-full sm:w-auto">שמור</button>
-                              <button onClick={() => setEditingStaffId(null)} className="bg-slate-100 px-3 py-2 rounded-lg text-xs w-full sm:w-auto">בטל</button>
-                            </div>
-                          ) : (
-                            <>
-                              <div>
-                                <div className="font-bold text-sm flex items-center gap-2">{staff.username} {!staff.active && <span className="text-[10px] bg-rose-100 text-rose-700 px-2 py-0.5 rounded">מושבת</span>}</div>
-                                <div className="text-[11px] text-slate-500 font-mono mt-0.5">סיסמה: {staff.password}</div>
-                              </div>
-                              <div className="flex gap-2 w-full sm:w-auto">
-                                <button onClick={() => handleToggleStaffActive(staff)} className={`flex-1 sm:flex-none px-3 py-2 rounded-lg text-xs font-semibold ${staff.active ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>{staff.active ? 'השבת' : 'הפעל'}</button>
-                                <button onClick={() => { setEditingStaffId(staff.id); setEditStaffUsername(staff.username); setEditStaffPassword(staff.password); }} className="flex-1 sm:flex-none px-3 py-2 bg-slate-100 rounded-lg text-xs">ערוך</button>
-                                <button onClick={() => handleDeleteStaff(staff)} className="flex-1 sm:flex-none px-3 py-2 bg-rose-50 text-rose-600 rounded-lg text-xs">מחק</button>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <form onSubmit={handleSaveAdminSettings} className="space-y-4">
-                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200">
-                    <h3 className="text-sm font-bold mb-4 text-slate-800">הגדרות EmailJS - חיבור לאופיס</h3>
-                    <div className="space-y-3">
-                      <div><label className="block text-xs font-semibold mb-1">מייל יעד להתרעות מנהל</label><input type="email" value={settingsForm.notificationEmail} onChange={e=>setSettingsForm({...settingsForm, notificationEmail:e.target.value})} className="w-full p-3 rounded-xl border text-sm dir-ltr text-left" /></div>
-                      <div><label className="block text-xs font-semibold mb-1">Service ID (Office)</label><input type="text" value={settingsForm.emailjsServiceId} onChange={e=>setSettingsForm({...settingsForm, emailjsServiceId:e.target.value})} className="w-full p-3 rounded-xl border text-sm dir-ltr text-left" /></div>
-                      <div><label className="block text-xs font-semibold mb-1">Template ID</label><input type="text" value={settingsForm.emailjsTemplateId} onChange={e=>setSettingsForm({...settingsForm, emailjsTemplateId:e.target.value})} className="w-full p-3 rounded-xl border text-sm dir-ltr text-left" /></div>
-                      <div><label className="block text-xs font-semibold mb-1">Public Key</label><input type="text" value={settingsForm.emailjsPublicKey} onChange={e=>setSettingsForm({...settingsForm, emailjsPublicKey:e.target.value})} className="w-full p-3 rounded-xl border text-sm dir-ltr text-left" /></div>
-                    </div>
-                  </div>
-                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200">
-                    <h3 className="text-sm font-bold mb-4 text-slate-800">סיסמת מנהל ראשית (izak)</h3>
-                    <div><input type="text" value={settingsForm.adminPassword} onChange={e=>setSettingsForm({...settingsForm, adminPassword:e.target.value})} className="w-full p-3 rounded-xl border text-sm dir-ltr text-left" /></div>
-                  </div>
-                  <button type="submit" disabled={savingSettings} className="w-full py-3.5 bg-slate-900 text-white text-sm font-bold rounded-xl active:scale-95">{savingSettings ? 'שומר...' : 'שמור הגדרות'}</button>
-                </form>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Details Side Panel / Bottom Sheet (Chat & Logs) */}
-      {activeDetailsOrder && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-40 flex justify-end">
-          <div className="bg-white w-full sm:w-96 h-full flex flex-col shadow-2xl animate-in slide-in-from-right sm:border-l border-slate-200">
-            <div className="px-5 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0 mt-safe pt-safe">
-              <div>
-                <h3 className="font-bold text-slate-900 text-sm">{activeDetailsOrder.orderType === 'B2B' ? activeDetailsOrder.customerName : activeDetailsOrder.modelName}</h3>
-                <span className="text-[11px] text-slate-500">פירוט וצ׳אט</span>
+              <div className="flex justify-end gap-2 pt-4 border-t border-slate-100 shrink-0">
+                <button type="button" onClick={() => setIsModalOpen(false)} className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 bg-slate-100">ביטול</button>
+                <button type="submit" disabled={saving} className="px-5 py-2 rounded-xl text-xs font-semibold bg-slate-900 text-white disabled:opacity-50">{saving ? 'שומר...' : 'שמור'}</button>
               </div>
-              <button onClick={() => setActiveDetailsOrderId(null)} className="p-2 bg-white rounded-full text-slate-400 shadow-sm"><X className="w-4 h-4"/></button>
-            </div>
-            
-            <div className="flex px-4 mt-3 gap-2 shrink-0">
-              <button onClick={() => setActiveTab('chat')} className={`flex-1 py-2 text-xs font-semibold rounded-xl flex justify-center gap-1.5 ${activeTab === 'chat' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}><MessageSquare className="w-3.5 h-3.5"/> צ׳אט</button>
-              <button onClick={() => setActiveTab('logs')} className={`flex-1 py-2 text-xs font-semibold rounded-xl flex justify-center gap-1.5 ${activeTab === 'logs' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}><History className="w-3.5 h-3.5"/> היסטוריה</button>
-            </div>
+            </form>
+          </div>
+        </div>
+      )}
 
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 flex flex-col-reverse">
-              {activeTab === 'chat' ? (
-                <div className="space-y-3 pb-2">
-                  {activeDetailsOrder.messages.length === 0 ? (
-                    <div className="text-center text-slate-400 text-xs py-10">אין הודעות בהזמנה זו</div>
-                  ) : (
-                    activeDetailsOrder.messages.map((msg, i) => (
-                      <div key={i} className={`flex flex-col ${msg.user === currentDisplayName ? 'items-end' : 'items-start'}`}>
-                        <div className={`max-w-[85%] p-3 rounded-2xl text-sm ${msg.user === currentDisplayName ? 'bg-slate-900 text-white rounded-tr-sm' : 'bg-slate-100 text-slate-800 rounded-tl-sm'}`}>
-                          {msg.user !== currentDisplayName && <span className="block text-[10px] font-bold text-slate-500 mb-0.5">{msg.user}</span>}
-                          {msg.text}
-                        </div>
-                        <span className="text-[10px] text-slate-400 mt-1 mx-1">{formatDateTime(msg.timestamp)}</span>
-                      </div>
-                    ))
-                  )}
-                </div>
-              ) : (
-                <div className="space-y-4 pb-2">
-                  {activeDetailsOrder.logs.map((log, i) => (
-                    <div key={i} className="flex gap-3 text-sm border-r-2 border-slate-200 pr-3 relative">
-                      <div className="absolute -right-[7px] top-1.5 w-3 h-3 rounded-full bg-slate-300 border-2 border-white"></div>
+      {/* Admin Settings Modal (Responsive) */}
+      {isAdmin && isAdminModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs z-50 flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col my-4 sm:my-8 max-h-[90vh]">
+            <div className="px-5 py-4 border-b border-slate-100 flex justify-between items-center shrink-0">
+              <h2 className="text-base sm:text-lg font-bold">הגדרות מנהל מערכת</h2>
+              <button onClick={() => setIsAdminModalOpen(false)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-xl"><X className="w-5 h-5"/></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-8">
+              <section>
+                <h3 className="text-sm font-bold text-slate-800 mb-3 flex items-center gap-2"><Users className="w-4 h-4"/> הוספת משתמש מורשה (Staff)</h3>
+                <form onSubmit={handleAddStaff} className="flex flex-col sm:flex-row gap-2">
+                  <input type="text" placeholder="שם משתמש" required value={newStaffUsername} onChange={(e)=>setNewStaffUsername(e.target.value)} className="flex-1 px-3 py-2 text-sm border rounded-xl bg-slate-50"/>
+                  <input type="text" placeholder="סיסמה" required value={newStaffPassword} onChange={(e)=>setNewStaffPassword(e.target.value)} className="flex-1 px-3 py-2 text-sm border rounded-xl bg-slate-50" dir="ltr"/>
+                  <button type="submit" disabled={creatingStaff} className="px-4 py-2 bg-slate-900 text-white rounded-xl text-sm font-semibold shrink-0">הוסף</button>
+                </form>
+                <div className="mt-4 space-y-2">
+                  {staffList.map((s) => (
+                    <div key={s.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100">
                       <div>
-                        <div className="font-bold text-slate-800 text-xs">{log.user}</div>
-                        <div className="text-slate-600 text-xs mt-0.5">{log.action}</div>
-                        <div className="text-[10px] text-slate-400 mt-1">{formatDateTime(log.timestamp)}</div>
+                        <span className="font-semibold text-sm mr-2">{s.username}</span>
+                        <span className="text-xs text-slate-400 font-mono">({s.password})</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="flex items-center cursor-pointer text-xs gap-1 mr-4">
+                          <input type="checkbox" checked={s.active} onChange={() => handleToggleStaffActive(s)} className="rounded border-slate-300"/>
+                          פעיל
+                        </label>
+                        <button onClick={() => handleDeleteStaff(s)} className="text-rose-500 p-1 bg-white rounded shadow-sm hover:bg-rose-50"><Trash2 className="w-4 h-4"/></button>
                       </div>
                     </div>
                   ))}
                 </div>
-              )}
+              </section>
+              <hr className="border-slate-100"/>
+              <section>
+                <h3 className="text-sm font-bold text-slate-800 mb-3 flex items-center gap-2"><Building2 className="w-4 h-4"/> הגדרות אימייל אוטומטי (EmailJS)</h3>
+                <form onSubmit={handleSaveAdminSettings} className="space-y-3">
+                  <input type="email" placeholder="מייל לקבלת התראות (של המשרד)" value={settingsForm.notificationEmail} onChange={(e)=>setSettingsForm({...settingsForm, notificationEmail: e.target.value})} className="w-full px-3 py-2 text-sm border rounded-xl bg-slate-50" dir="ltr"/>
+                  <input type="text" placeholder="EmailJS Service ID" value={settingsForm.emailjsServiceId} onChange={(e)=>setSettingsForm({...settingsForm, emailjsServiceId: e.target.value})} className="w-full px-3 py-2 text-sm border rounded-xl bg-slate-50" dir="ltr"/>
+                  <input type="text" placeholder="EmailJS Template ID" value={settingsForm.emailjsTemplateId} onChange={(e)=>setSettingsForm({...settingsForm, emailjsTemplateId: e.target.value})} className="w-full px-3 py-2 text-sm border rounded-xl bg-slate-50" dir="ltr"/>
+                  <input type="text" placeholder="EmailJS Public Key" value={settingsForm.emailjsPublicKey} onChange={(e)=>setSettingsForm({...settingsForm, emailjsPublicKey: e.target.value})} className="w-full px-3 py-2 text-sm border rounded-xl bg-slate-50" dir="ltr"/>
+                  <button type="submit" disabled={savingSettings} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl text-sm font-semibold w-full sm:w-auto">שמור הגדרות מערכת</button>
+                </form>
+              </section>
             </div>
-            
-            {activeTab === 'chat' && (
-              <form onSubmit={handleSendMessage} className="p-3 sm:p-4 border-t border-slate-100 bg-white shrink-0 pb-safe">
-                <div className="relative flex items-center">
-                  <input type="text" value={newMessageText} onChange={e=>setNewMessageText(e.target.value)} placeholder="הקלד הודעה..." className="w-full bg-slate-50 border border-slate-200 rounded-full py-3 pr-4 pl-12 text-sm focus:outline-none focus:bg-white" />
-                  <button type="submit" disabled={sendingMsg || !newMessageText.trim()} className="absolute left-1.5 w-9 h-9 bg-amber-400 hover:bg-amber-500 text-slate-900 rounded-full flex items-center justify-center disabled:opacity-50 transition"><Send className="w-4 h-4 ml-1" /></button>
-                </div>
-              </form>
-            )}
           </div>
         </div>
       )}
 
-      {/* Lightbox for Images */}
+      {/* Chat & History Details Modal */}
+      {activeDetailsOrderId && activeDetailsOrder && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs z-50 flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl overflow-hidden my-4 flex flex-col h-[80vh]">
+            <div className="px-5 py-4 border-b border-slate-100 flex justify-between items-center shrink-0">
+              <h2 className="text-base sm:text-lg font-bold">{activeDetailsOrder.orderType === 'B2B' ? activeDetailsOrder.customerName : 'הזמנת מלאי'} - פרטים</h2>
+              <button onClick={() => setActiveDetailsOrderId(null)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-xl"><X className="w-5 h-5"/></button>
+            </div>
+            <div className="flex border-b border-slate-100 shrink-0">
+              <button onClick={() => setActiveTab('chat')} className={`flex-1 py-3 text-sm font-semibold border-b-2 transition ${activeTab === 'chat' ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-500'}`}>צ'אט והודעות</button>
+              <button onClick={() => setActiveTab('logs')} className={`flex-1 py-3 text-sm font-semibold border-b-2 transition ${activeTab === 'logs' ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-500'}`}>היסטוריית שינויים</button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 bg-slate-50/50">
+              {activeTab === 'logs' ? (
+                <div className="space-y-3">
+                  {[...(activeDetailsOrder.logs || [])].reverse().map((log, i) => (
+                    <div key={i} className="bg-white p-3 rounded-xl border border-slate-100 text-sm">
+                      <div className="flex justify-between items-center mb-1 text-slate-500 text-xs">
+                        <span className="font-semibold text-slate-700">{log.user}</span>
+                        <span>{formatDateTime(log.timestamp)}</span>
+                      </div>
+                      <p className="text-slate-800">{log.action}</p>
+                    </div>
+                  ))}
+                  {(!activeDetailsOrder.logs || activeDetailsOrder.logs.length === 0) && <p className="text-center text-slate-400 text-sm py-8">אין היסטוריית שינויים להזמנה זו.</p>}
+                </div>
+              ) : (
+                <div className="flex flex-col h-full">
+                  <div className="flex-1 overflow-y-auto space-y-3 pb-4">
+                    {(!activeDetailsOrder.messages || activeDetailsOrder.messages.length === 0) && <p className="text-center text-slate-400 text-sm py-8">אין עדיין הודעות להזמנה זו.</p>}
+                    {activeDetailsOrder.messages?.map((msg, i) => (
+                      <div key={i} className={`flex flex-col ${msg.user === currentDisplayName ? 'items-end' : 'items-start'}`}>
+                        <div className={`max-w-[85%] p-3 rounded-2xl text-sm ${msg.user === currentDisplayName ? 'bg-slate-900 text-white rounded-br-none' : 'bg-white border border-slate-200 text-slate-800 rounded-bl-none'}`}>
+                          {msg.text}
+                        </div>
+                        <span className="text-[10px] text-slate-400 mt-1">{msg.user} • {formatDateTime(msg.timestamp)}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <form onSubmit={handleSendMessage} className="flex gap-2 shrink-0 bg-white p-1 rounded-2xl border border-slate-200">
+                    <input type="text" placeholder="כתוב הודעה..." value={newMessageText} onChange={(e) => setNewMessageText(e.target.value)} className="flex-1 px-3 py-2 text-sm outline-none bg-transparent" />
+                    <button type="submit" disabled={sendingMsg || !newMessageText.trim()} className="p-2 bg-slate-900 text-white rounded-xl disabled:opacity-50"><Send className="w-4 h-4 rtl:-scale-x-100" /></button>
+                  </form>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Lightbox Image */}
       {lightboxImage && (
-        <div className="fixed inset-0 bg-black/95 z-[60] flex items-center justify-center p-2 sm:p-4" onClick={() => setLightboxImage(null)}>
-          <button className="absolute top-4 right-4 sm:top-6 sm:right-6 text-white/50 hover:text-white p-2"><X className="w-6 h-6 sm:w-8 sm:h-8" /></button>
-          <img src={lightboxImage} alt="" className="max-w-full max-h-full object-contain rounded-xl" onClick={e => e.stopPropagation()} />
+        <div className="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center p-2 sm:p-4" onClick={() => setLightboxImage(null)}>
+          <img src={lightboxImage} alt="Fullscreen View" className="max-w-full max-h-full object-contain rounded-lg" />
+          <button className="absolute top-4 right-4 text-white/70 hover:text-white p-2"><X className="w-8 h-8" /></button>
         </div>
       )}
     </div>
